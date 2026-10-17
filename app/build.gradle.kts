@@ -17,8 +17,23 @@ android {
         versionName = "1.0"
     }
 
+    // Release signing comes from ~/.gradle/gradle.properties (never committed):
+    // GAMEHUB_KEYSTORE, GAMEHUB_KEYSTORE_PASSWORD, GAMEHUB_KEY_ALIAS, GAMEHUB_KEY_PASSWORD
+    val keystorePath = providers.gradleProperty("GAMEHUB_KEYSTORE").orNull
+    signingConfigs {
+        if (keystorePath != null) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = providers.gradleProperty("GAMEHUB_KEYSTORE_PASSWORD").get()
+                keyAlias = providers.gradleProperty("GAMEHUB_KEY_ALIAS").get()
+                keyPassword = providers.gradleProperty("GAMEHUB_KEY_PASSWORD").get()
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (keystorePath != null) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
@@ -31,6 +46,13 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
+                "GameHubDownloader-${versionName}-${buildType.name}.apk"
+        }
+    }
+
     packaging {
         resources {
             excludes += setOf("META-INF/LICENSE*", "META-INF/NOTICE*", "META-INF/DEPENDENCIES", "META-INF/versions/**")

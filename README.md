@@ -1,0 +1,68 @@
+# GameHub Downloader
+
+A controller-first Android app (styled like the Steam Deck UI) for browsing a [GameHub](../GameHub) server and downloading ROMs to your handheld. It is designed for the **AYN Thor** but adapts to any Android 10+ device in landscape or portrait.
+
+## Features
+
+- **GameHub connections.** Add one or more servers. Pair by QR (GameHub's device-pairing flow: scan with a signed-in phone or PC, then tap Approve) or paste an API token from *Account › API tokens*. Switch servers from the top bar or with Select.
+- **Per-system download folders.** The first time you download for a system, the app asks where to save it. You can pick a dedicated folder, or pick a ROMs base folder so each system gets a subfolder named after its slug (`ROMs/snes`, `ROMs/gba`, …). Manage all of them in *Settings › Download folders*, including "use base folder for all unset systems".
+- **Background downloads.** Downloads run in a foreground service and hold a wake lock and Wi‑Fi lock, so they keep going with the screen off or the device asleep.
+  - Interrupted transfers resume with HTTP `Range` and retry automatically after a network drop.
+  - Files are written as `name.part` and renamed when complete.
+- **Notifications.** You get live progress with a Cancel action, a completed or failed alert for each game, and a summary when the queue empties.
+- **Adaptive layout.** Landscape shows a systems rail plus a cover grid. Portrait, and narrow screens like the Thor's second display, show system tabs plus a grid.
+
+## Controls
+
+Default (auto) mapping:
+
+| Button | Action |
+|---|---|
+| D-pad / stick | Move focus |
+| A | Select |
+| B | Back / close dialog |
+| L1 / R1 | Previous / next system |
+| Y | Search |
+| X | Downloads queue |
+| Start | Settings |
+| Select | Switch connection |
+
+**Settings › Controller mapping** works like this:
+- **Auto-detection:** each controller is recognized when you first press a button on it, and a toast confirms which one was detected. Mappings are saved per controller.
+- **Remapping:** select an action, then press the button you want for it. If that button is already used, the two actions swap.
+- **Layout presets:** Standard (A confirms) or Nintendo-style (A↔B and X↔Y swapped).
+- **Testing and reset:** a live button tester shows what each press does, and **Reset to auto** restores the defaults.
+
+On-screen button hints always show your current mapping.
+
+## Build and install
+
+Requirements: JDK 17+ and Android SDK 35 (`local.properties` points at the SDK).
+
+```sh
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+On the Thor, enable *Developer options › USB debugging*, then plug it in.
+
+## GameHub API used
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/heartbeat` | Connection test (returns `user` when the token is valid) |
+| `GET /api/platforms` | Systems list |
+| `GET /api/library?platform=&q=&offset=&limit=` | Game grid (paged) |
+| `GET /api/roms/{id}` | Game details |
+| `GET /api/roms/{id}/file?download=1` | ROM download (supports `Range`) |
+| `GET /api/roms/{id}/discs` | Multi-disc game as a single zip (no resume) |
+| `GET /api/media/...?w=` | Box art thumbnails |
+| `POST /api/pair/start`, `POST /api/pair/{id}/poll` | QR device pairing (requests a `viewer`-scope token) |
+
+Every request sends `Authorization: Bearer ghk_…`.
+
+## Known limitations (server side)
+
+- **CUE/BIN games:** GameHub indexes only the `.cue`, so only the cue sheet downloads. The app warns about this on the game page.
+- **Multi-disc zips** have no `Content-Length` or `Range` support, so they show indeterminate progress and restart from zero if interrupted.
+- **Folder-based games** (for example Wii U) return HTTP 415 and can't be downloaded.

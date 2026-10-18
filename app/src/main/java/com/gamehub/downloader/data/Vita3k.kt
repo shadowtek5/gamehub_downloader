@@ -42,6 +42,41 @@ class Vita3k(private val context: Context, private val settings: SettingsReposit
             return sdkType != 0xC0
         }
 
+        /**
+         * Where the game sits in a zip. Zips come in a few shapes, all handled:
+         *  - installed layout: app/PCSE01168/…, patch/…, addcont/…, license/… (copied into ux0 as-is)
+         *  - game at the root: eboot.bin, sce_sys/… (goes to ux0/app/<TITLE_ID>/)
+         *  - either of those wrapped in an extra folder, e.g. PCSE01168/eboot.bin or MyGame/app/PCSE01168/…
+         * [wrapper] is the extra folder to strip ("" if none); [gameRoot] is the folder holding eboot.bin.
+         */
+        data class ZipLayout(val installed: Boolean, val wrapper: String, val gameRoot: String)
+
+        fun zipLayout(names: List<String>, titleId: String?): ZipLayout {
+            val paths = names.map { it.replace('\\', '/') }
+            val installedRe = Regex("""^((?:[^/]+/)*?)(app|patch|addcont|license)/(PCS[A-Z]\d{5})/""", RegexOption.IGNORE_CASE)
+            paths.mapNotNull { installedRe.find(it) }.minByOrNull { it.groupValues[1].count { c -> c == '/' } }?.let { m ->
+                val wrapper = m.groupValues[1]
+                val id = titleId ?: m.groupValues[3].uppercase()
+                val app = paths.firstOrNull { it.startsWith("${wrapper}app/$id/", ignoreCase = true) }
+                    ?.let { it.substring(0, wrapper.length + 4 + id.length + 1) } ?: "${wrapper}app/$id/"
+                return ZipLayout(installed = true, wrapper = wrapper, gameRoot = app)
+            }
+            val root = paths
+                .filter { it.endsWith("sce_sys/param.sfo", ignoreCase = true) && (it.length == 17 || it[it.length - 18] == '/') }
+                .minByOrNull { it.count { c -> c == '/' } }
+                ?.dropLast("sce_sys/param.sfo".length) ?: ""
+            return ZipLayout(installed = false, wrapper = root, gameRoot = root)
+        }
+
+        /**
+         * True if eboot.bin is something Vita3K can load: a SELF ("SCE" + NUL) or a plain ELF. Raw NoNpDrm
+         * copies with sce_pfs are still PFS-encrypted (random-looking bytes) and need Vita3K's installer.
+         */
+        fun isLoadableExecutable(header: ByteArray): Boolean = header.size >= 4 && (
+            (header[0] == 'S'.code.toByte() && header[1] == 'C'.code.toByte() && header[2] == 'E'.code.toByte() && header[3] == 0.toByte()) ||
+                (header[0] == 0x7F.toByte() && header[1] == 'E'.code.toByte() && header[2] == 'L'.code.toByte() && header[3] == 'F'.code.toByte())
+            )
+
         /** Content ID stored in a license (.rif / work.bin) at offset 0x10, e.g. UP0438-PCSE01315_00-0000000000000001. */
         fun rifContentId(rif: ByteArray): String? =
             if (rif.size < 0x40) null
@@ -100,11 +135,11 @@ class Vita3k(private val context: Context, private val settings: SettingsReposit
     }
 
     /**
-     * Installs a game zip into Vita3K. "Installed layout" zips (app/, patch/, addcont/ at the top)
-     * are copied into ux0 as-is; zips with the game at the root (sce_sys/param.sfo) go to
-     * ux0/app/<TITLE_ID>/. Returns the title ID.
+     * Installs a game zip into Vita3K. "Installed layout" zips (app/, patch/, addcont/) are copied
+     * into ux0 as-is; zips with the game files directly (sce_sys/param.sfo) go to ux0/app/<TITLE_ID>/.
+     * Either may be wrapped in an extra folder (see [zipLayout]). Returns the title ID.
      */
-    suspend fun install(zip: DocumentFile, onProgress: (Long, Long) -> Unit = { _, _ -> }): String = withContext(Dispatchers.IO) {
+    suspend fun install(zip: DocumentFile, onProgress: (Long, Long) -> Unit = { _, _ -> }): InstallResult = withContext(Dispatchers.IO) {
         val key = zip.name ?: zip.uri.toString()
         _installing.value = _installing.value + (key to (0L to 0L))
         try {
@@ -117,7 +152,7 @@ class Vita3k(private val context: Context, private val settings: SettingsReposit
         }
     }
 
-    private suspend fun installInternal(zip: DocumentFile, onProgress: (Long, Long) -> Unit): String = withContext(Dispatchers.IO) {
+    private suspend fun installInternal(zip: DocumentFile, onProgress: (Long, Long) -> Unit): InstallResult = withContext(Dispatchers.IO) {
         val ux0 = ux0() ?: error("Vita3K folder isn't set (Settings › Vita3K)")
         // One pass over the zip's table of contents: entry names (for the layout), the title ID, and
         // what's needed to tell whether Vita3K will be able to run it (encrypted eboot + license).
@@ -127,8 +162,8 @@ class Vita3k(private val context: Context, private val settings: SettingsReposit
                     val entries = z.entries.toList()
                     val names = entries.map { it.name.replace('\\', '/') }
                     val tid = LaunchFileWriter.titleIdIn(z) ?: zip.name?.let { LaunchFileWriter.titleIdFromName(it) }
-                    val layout = names.any { it.substringBefore('/').lowercase() in UX0_DIRS && it.contains('/') }
-                    val prefix = if (layout) "app/${tid.orEmpty().lowercase()}/" else ""
+                    val layout = zipLayout(names, tid)
+                    val prefix = layout.gameRoot.lowercase()
                     fun read(path: String, max: Int = Int.MAX_VALUE) =
                         entries.firstOrNull { it.name.replace('\\', '/').lowercase() == prefix + path }?.let { e ->
                             z.getInputStream(e).use { s -> if (max == Int.MAX_VALUE) s.readBytes() else s.readNBytes(max) }
@@ -136,17 +171,21 @@ class Vita3k(private val context: Context, private val settings: SettingsReposit
                     ZipInfo(
                         names = names,
                         titleId = tid,
-                        installedLayout = layout,
+                        layout = layout,
                         ebootHeader = read("eboot.bin", 16),
                         workBin = read("sce_sys/package/work.bin"),
                         contentId = read("sce_sys/param.sfo")?.let { LaunchFileWriter.sfoString(it, "CONTENT_ID") },
-                        hasLicenseDir = names.any { it.lowercase().startsWith("license/") && it.lowercase().endsWith(".rif") },
+                        hasLicenseDir = layout.installed && names.any {
+                            it.lowercase().startsWith(layout.wrapper.lowercase() + "license/") && it.lowercase().endsWith(".rif")
+                        },
                     )
                 }
             }
         } ?: error("Can't open ${zip.name}")
         val id = info.titleId ?: error("No title ID found in ${zip.name}")
-        val installedLayout = info.installedLayout
+
+        // PFS-encrypted copies can only be decrypted by Vita3K's own installer (it isn't reachable from other apps).
+        if (info.ebootHeader != null && !isLoadableExecutable(info.ebootHeader)) throw NeedsVita3kInstaller(id)
 
         // Retail-encrypted dumps only run with their license. Refuse before touching anything so an
         // existing (working) install in Vita3K is never overwritten by one that can't boot.
@@ -156,32 +195,55 @@ class Vita3k(private val context: Context, private val settings: SettingsReposit
             error("$id is an encrypted dump with no license (sce_sys/package/work.bin), so Vita3K can't run it. Use a decrypted dump, or install it in Vita3K with its zRIF")
         }
 
-        val map: (List<String>) -> List<String>? = if (installedLayout) {
-            { segs -> segs.takeIf { it.size > 1 && it[0].lowercase() in UX0_DIRS }?.let { listOf(it[0].lowercase()) + it.drop(1) } }
-        } else {
-            { segs -> listOf("app", id) + segs }
+        // Strip any wrapper folder; anything outside it (readmes, etc.) is skipped.
+        val wrapper = info.layout.wrapper.split('/').filter { it.isNotEmpty() }.map { it.lowercase() }
+        val map: (List<String>) -> List<String>? = { all ->
+            val segs = all.takeIf { it.size > wrapper.size && it.take(wrapper.size).map { s -> s.lowercase() } == wrapper }?.drop(wrapper.size)
+            when {
+                segs == null -> null
+                info.layout.installed -> segs.takeIf { it.size > 1 && it[0].lowercase() in UX0_DIRS }?.let { listOf(it[0].lowercase()) + it.drop(1) }
+                else -> listOf("app", id) + segs
+            }
         }
         ArchiveExtractor(context).extractZipMapped(zip, ux0, map, onProgress)
         // Like Vita3K's own installer: a NoNpDrm work.bin becomes ux0/license/<TITLE_ID>/<CONTENT_ID>.rif.
+        var licenseAdded = false
         info.workBin?.let { rif ->
             val contentId = info.contentId ?: rifContentId(rif)
             if (contentId != null) {
                 val dir = (ux0.findFile("license") ?: ux0.createDirectory("license"))
                     ?.let { it.findFile(id) ?: it.createDirectory(id) }
                     ?: error("Couldn't create Vita3K's license folder")
-                dir.findFile("$contentId.rif")?.delete()
+                licenseAdded = dir.findFile("$contentId.rif")?.delete() != true
                 val out = dir.createFile("application/octet-stream", "$contentId.rif") ?: error("Couldn't write the license")
                 context.contentResolver.openOutputStream(out.uri, "w")?.use { it.write(rif) }
             }
         }
         refresh()
-        id
+        InstallResult(id, licenseAdded)
+    }
+
+    /** [licenseAdded]: a license was installed that Vita3K didn't have before. */
+    class InstallResult(val titleId: String, val licenseAdded: Boolean)
+
+    /** The zip is a PFS-encrypted copy (sce_pfs); only Vita3K's own "Install .zip" can decrypt it. */
+    class NeedsVita3kInstaller(val titleId: String) : Exception(
+        "$titleId is a PFS-encrypted copy that only Vita3K's own installer can decrypt. In Vita3K, choose Install .zip/.vpk and pick this zip; " +
+            "then Sync with Vita3K (Folders) or Reinstall here adds the launch file and removes the zip"
+    )
+
+    /** True if Vita3K has [titleId] installed with an eboot.bin it can load (not a still-encrypted copy). */
+    suspend fun isInstalledAndLoadable(titleId: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val eboot = ux0()?.findFile("app")?.findFile(titleId)?.findFile("eboot.bin") ?: return@runCatching false
+            context.contentResolver.openInputStream(eboot.uri)?.use { isLoadableExecutable(it.readNBytes(16)) } == true
+        }.getOrDefault(false)
     }
 
     private class ZipInfo(
         val names: List<String>,
         val titleId: String?,
-        val installedLayout: Boolean,
+        val layout: ZipLayout,
         val ebootHeader: ByteArray?,
         val workBin: ByteArray?,
         val contentId: String?,
@@ -230,16 +292,22 @@ class Vita3k(private val context: Context, private val settings: SettingsReposit
             problems += "Vita3K folder not set, zip kept"
         } else {
             runCatching { install(zip, onProgress) }
-                .onSuccess { installed = true }
+                .onSuccess { r ->
+                    installed = true
+                    // Vita3K caches licenses per session, including "missing" from an earlier failed boot.
+                    if (r.licenseAdded) problems += "license installed; if Vita3K is open, close it before playing"
+                }
                 .onFailure { e ->
                     if (e is kotlinx.coroutines.CancellationException) throw e
-                    problems += "Vita3K install failed: ${e.message}. Zip kept"
+                    // Already installed through Vita3K's own installer: nothing more to do with the zip.
+                    if (e is NeedsVita3kInstaller && isInstalledAndLoadable(titleId)) installed = true
+                    else problems += "Vita3K install failed: ${e.message}. Zip kept"
                 }
         }
 
         // The .dpt sits next to the zip in the same folder; Cocoon only looks at the .dpt files.
         // Skipped when the install failed and the game isn't in Vita3K, since it would launch nothing.
-        val wantLaunchFile = installed || titleId in apps.value || settings.current().vita3kFolderUri == null
+        val wantLaunchFile = installed || isInstalledAndLoadable(titleId) || settings.current().vita3kFolderUri == null
         val dir = withContext(Dispatchers.IO) { FolderStorage.resolve(context, mapping) }
         val launchFile = if (!wantLaunchFile) null else dir?.let { d ->
             runCatching { writer.write(d, zipName, titleId) }.getOrElse { problems += "launch file failed: ${it.message}"; null }

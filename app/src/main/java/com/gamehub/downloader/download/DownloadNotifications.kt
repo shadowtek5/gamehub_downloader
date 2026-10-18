@@ -68,8 +68,9 @@ object DownloadNotifications {
             if (active.bytesPerSecond > 0) append(" • ").append(formatBytes(active.bytesPerSecond)).append("/s")
             if (queued > 0) append(" • $queued queued")
         }
-        if (active.state == DownloadState.Extracting) {
-            return b.setContentTitle("Extracting ${active.title}")
+        if (active.state == DownloadState.Extracting || active.state == DownloadState.Installing) {
+            val verb = if (active.state == DownloadState.Installing) "Installing in Vita3K:" else "Extracting"
+            return b.setContentTitle("$verb ${active.title}")
                 .setContentText(if (queued > 0) "$queued queued" else active.systemName)
                 .setProgress(100, pct ?: 0, pct == null)
                 .build()
@@ -88,7 +89,8 @@ object DownloadNotifications {
             .setSmallIcon(if (ok) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
             .setContentTitle(if (ok) "Downloaded ${task.title}" else "Download failed: ${task.title}")
             .setContentText(
-                if (ok) task.extractedFiles?.let { "${task.systemName} • extracted $it file${if (it == 1) "" else "s"}" }
+                if (ok && task.note != null) "${task.systemName} • ${task.note}"
+                else if (ok) task.extractedFiles?.let { "${task.systemName} • extracted $it file${if (it == 1) "" else "s"}" }
                     ?: "${task.systemName} • ${formatBytes(task.downloadedBytes)}"
                 else task.error ?: "Unknown error"
             )

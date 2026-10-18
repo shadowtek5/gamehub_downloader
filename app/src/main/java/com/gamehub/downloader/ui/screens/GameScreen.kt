@@ -37,6 +37,10 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.InstallMobile
+import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -73,6 +77,7 @@ import com.gamehub.downloader.api.RelatedGame
 import com.gamehub.downloader.api.RomDetail
 import com.gamehub.downloader.data.FolderStorage
 import com.gamehub.downloader.data.InstalledIndex
+import com.gamehub.downloader.data.SystemRules
 import com.gamehub.downloader.download.DownloadMode
 import com.gamehub.downloader.download.DownloadState
 import com.gamehub.downloader.download.formatBytes
@@ -120,11 +125,15 @@ fun GameScreen(
     val pickSystemFolder = rememberFolderPicker { vm.onFolderPicked(it, pendingMode) }
     val pickBaseFolder = rememberFolderPicker { vm.useBaseFolder(pendingMode, it) }
     val pickChangeFolder = rememberFolderPicker { vm.changeFolder(it) }
+    val pickVita3kFolder = rememberFolderPicker { vm.setVita3kFolder(it) }
+    val vita3kInstalling by vm.vita3kInstalling.collectAsState()
+    val vita3kFolderSet by vm.vita3kFolderSet.collectAsState(initial = false)
 
     OnAction { if (it == GameAction.Downloads) onOpenDownloads() }
 
     LaunchedEffect(state.message) {
-        if (state.message != null) { delay(2500); vm.clearMessage() }
+        // Longer messages (e.g. why a Vita install was refused) stay up long enough to read.
+        state.message?.let { delay((2500L + it.length * 60L).coerceAtMost(12_000L)); vm.clearMessage() }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -171,6 +180,14 @@ fun GameScreen(
                             onCancel = { task?.let { vm.cancel(it.id) } },
                             onChangeFolder = { pickChangeFolder(null) },
                             onDelete = vm::requestDelete,
+                            onCreateLaunchFile = vm::createLaunchFile,
+                            vita3kFolderSet = vita3kFolderSet,
+                            vita3kProgress = vita3kInstalling.entries.firstOrNull { (name, _) ->
+                                InstalledIndex.normalize(name, isFile = true) == InstalledIndex.normalize(rom.filename ?: rom.title, isFile = true)
+                            }?.value,
+                            onChooseVita3kFolder = { pickVita3kFolder(null) },
+                            onInstallVita3k = vm::installInVita3k,
+                            onPlayVita3k = vm::playInVita3k,
                             onSetExtract = vm::setExtract,
                             onTrailer = { url ->
                                 runCatching {
@@ -210,7 +227,7 @@ fun GameScreen(
         state.message?.let { msg ->
             Text(
                 msg,
-                Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp).clip(RoundedCornerShape(20.dp))
+                Modifier.align(Alignment.BottomCenter).padding(start = 24.dp, end = 24.dp, bottom = 56.dp).clip(RoundedCornerShape(20.dp))
                     .background(DeckColors.SurfaceHigh).padding(horizontal = 18.dp, vertical = 10.dp),
             )
         }
@@ -221,6 +238,7 @@ fun GameScreen(
             systemName = state.rom?.platformName ?: state.rom?.platformSlug ?: "",
             baseLabel = p.baseFolderLabel,
             extract = p.extract,
+            showExtract = state.rom?.platformSlug?.let { SystemRules.canExtract(it) } ?: true,
             onToggleExtract = vm::togglePromptExtract,
             onUseBase = { vm.useBaseFolder(p.mode) },
             onPickSystem = { pendingMode = p.mode; pickSystemFolder(null) },
@@ -294,6 +312,12 @@ private fun Details(
     onCancel: () -> Unit,
     onChangeFolder: () -> Unit,
     onDelete: () -> Unit,
+    onCreateLaunchFile: () -> Unit,
+    vita3kFolderSet: Boolean,
+    vita3kProgress: Pair<Long, Long>?,
+    onChooseVita3kFolder: () -> Unit,
+    onInstallVita3k: () -> Unit,
+    onPlayVita3k: () -> Unit,
     onSetExtract: (Boolean) -> Unit,
     onTrailer: (String) -> Unit,
     relatedIds: Map<String, Long?>,
@@ -302,7 +326,7 @@ private fun Details(
     modifier: Modifier,
 ) {
     val active = taskState == DownloadState.Queued || taskState == DownloadState.Running ||
-        taskState == DownloadState.Retrying || taskState == DownloadState.Extracting
+        taskState == DownloadState.Retrying || taskState == DownloadState.Extracting || taskState == DownloadState.Installing
     val downloadFocus = remember { FocusRequester() }
     LaunchedEffect(promptOpen) { if (!promptOpen) runCatching { downloadFocus.requestFocus() } }
     val trailer = rom.trailerUrl?.takeIf { it.startsWith("http") }
@@ -344,6 +368,7 @@ private fun Details(
                         DownloadState.Queued -> "Waiting in queue…"
                         DownloadState.Retrying -> taskError ?: "Reconnecting…"
                         DownloadState.Extracting -> "Extracting archive…" + (taskPercent?.let { " $it%" } ?: "")
+                        DownloadState.Installing -> "Installing in Vita3K…" + (taskPercent?.let { " $it%" } ?: "")
                         else -> buildString {
                             append("Downloading ")
                             taskPercent?.let { append("$it% ") }
@@ -378,7 +403,8 @@ private fun Details(
                     )
                 }
                 if (trailer != null) DeckButton("Watch trailer", { onTrailer(trailer) }, icon = Icons.Default.PlayCircle)
-                if (installedFile != null) DeckButton("Delete", onDelete, icon = Icons.Default.Delete)
+                if (state.vita3kInstalled) DeckButton("Play in Vita3K", onPlayVita3k, icon = Icons.Default.PlayArrow, primary = true)
+                if (installedFile != null || state.vita3kInstalled) DeckButton("Delete", onDelete, icon = Icons.Default.Delete)
             }
         }
         if (taskState == DownloadState.Failed && taskError != null) {
@@ -418,7 +444,7 @@ private fun Details(
                 }
                 DeckButton("Change", onChangeFolder)
             }
-            state.folder?.let { folder ->
+            state.folder?.takeIf { SystemRules.canExtract(rom.platformSlug) }?.let { folder ->
                 DeckToggle(
                     label = "Extract .zip / .7z after download",
                     description = "For ${rom.platformName ?: rom.platformSlug}: unpack into the folder, then delete the archive",
@@ -426,6 +452,80 @@ private fun Details(
                     onCheckedChange = onSetExtract,
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+        }
+
+        // ---- Vita3K (PS Vita): installed status, install from the downloaded zip ----
+        if (SystemRules.supportsVita3k(rom.platformSlug)) {
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.SportsEsports, null, tint = if (state.vita3kInstalled) DeckColors.Success else DeckColors.TextDim)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Vita3K", color = DeckColors.TextDim, fontSize = 12.sp)
+                        Text(
+                            when {
+                                !vita3kFolderSet -> "Vita3K folder not set — needed to install and list games"
+                                vita3kProgress != null -> "Installing… " + (vita3kProgress.second.takeIf { it > 0 }
+                                    ?.let { "${vita3kProgress.first * 100 / it}%" } ?: "")
+                                state.vita3kInstalled -> "Installed (${state.vitaTitleId})"
+                                installedFile != null -> "Not installed yet" + (state.vitaTitleId?.let { " • $it" } ?: "")
+                                else -> "Not installed • download first"
+                            },
+                            fontSize = 14.sp,
+                        )
+                    }
+                    if (!vita3kFolderSet) DeckButton("Choose Vita3K folder", onChooseVita3kFolder)
+                }
+                vita3kProgress?.let { (done, total) ->
+                    if (total > 0) LinearProgressIndicator(progress = { done.toFloat() / total }, Modifier.fillMaxWidth(), color = DeckColors.Accent, trackColor = DeckColors.SurfaceHigh)
+                    else LinearProgressIndicator(Modifier.fillMaxWidth(), color = DeckColors.Accent, trackColor = DeckColors.SurfaceHigh)
+                }
+                if (vita3kFolderSet && vita3kProgress == null && installedFile != null && installedFile.endsWith(".zip", ignoreCase = true)) {
+                    DeckButton(
+                        if (state.vita3kInstalled) "Reinstall in Vita3K" else "Install in Vita3K",
+                        onInstallVita3k,
+                        icon = Icons.Default.InstallMobile,
+                        primary = !state.vita3kInstalled,
+                    )
+                }
+            }
+        }
+
+        // ---- Launch file for front-ends (PS Vita → .dpt for Cocoon / Daijishou) ----
+        if (SystemRules.supportsLaunchFiles(rom.platformSlug)) {
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.RocketLaunch, null, tint = if (state.launchFile != null) DeckColors.Accent else DeckColors.TextDim)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Launch file (.dpt) for Cocoon", color = DeckColors.TextDim, fontSize = 12.sp)
+                        Text(
+                            when {
+                                state.launchFile != null -> state.launchFile
+                                state.folder == null -> "Created in the game folder after download"
+                                else -> "Not created yet"
+                            },
+                            fontSize = 14.sp,
+                        )
+                    }
+                }
+                if (state.folder == null) {
+                    Text("Set the game folder first (download once, or Settings › Folders).", color = DeckColors.TextDim, fontSize = 12.sp)
+                } else if (installedFile != null || state.vita3kInstalled) {
+                    DeckButton(
+                        if (state.launchFile != null) "Recreate launch file" else "Create launch file",
+                        onCreateLaunchFile,
+                        icon = Icons.Default.RocketLaunch,
+                        primary = state.launchFile == null,
+                    )
+                }
             }
         }
 
@@ -649,6 +749,7 @@ private fun FolderPromptDialog(
     systemName: String,
     baseLabel: String?,
     extract: Boolean,
+    showExtract: Boolean,
     onToggleExtract: () -> Unit,
     onUseBase: () -> Unit,
     onPickSystem: () -> Unit,
@@ -674,7 +775,7 @@ private fun FolderPromptDialog(
                     DeckButton("Choose a ROMs base folder (one sub-folder per system)…", onPickBase, Modifier.fillMaxWidth(), icon = Icons.Default.CreateNewFolder)
                 }
                 LaunchedEffect(Unit) { runCatching { fr.requestFocus() } }
-                DeckToggle(
+                if (showExtract) DeckToggle(
                     label = "Extract .zip / .7z after download",
                     description = "Saved for $systemName along with the folder",
                     checked = extract,

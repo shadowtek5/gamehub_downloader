@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.util.UUID
 
-enum class DownloadState { Queued, Running, Retrying, Extracting, Completed, Failed, Cancelled }
+enum class DownloadState { Queued, Running, Retrying, Extracting, Installing, Completed, Failed, Cancelled }
 
 enum class DownloadMode { File, DiscsZip }
 
@@ -33,12 +33,14 @@ data class DownloadTask(
     val attempt: Int = 0,
     /** Set after extraction: how many files came out of the archive. */
     val extractedFiles: Int? = null,
+    /** Extra result info for a finished download (e.g. launch file created, or why it wasn't). */
+    val note: String? = null,
 ) {
     val percent: Int?
         get() = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else null
     val isActive: Boolean
         get() = state == DownloadState.Queued || state == DownloadState.Running ||
-            state == DownloadState.Retrying || state == DownloadState.Extracting
+            state == DownloadState.Retrying || state == DownloadState.Extracting || state == DownloadState.Installing
 }
 
 /**

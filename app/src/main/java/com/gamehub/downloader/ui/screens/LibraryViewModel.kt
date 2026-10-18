@@ -60,7 +60,13 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     /** What's already in each system folder, for the "installed" badges and rail counts. */
     val installed = app.installed.contents
 
-    fun rescanFolders() = viewModelScope.launch { app.installed.refresh(_state.value.connection?.id) }
+    /** Vita3K's installed games, so Vita covers show as installed even when the zip was removed. */
+    val vita3kApps = app.vita3k.apps
+
+    fun rescanFolders() = viewModelScope.launch {
+        app.installed.refresh(_state.value.connection?.id)
+        app.vita3k.refresh()
+    }
 
     init {
         viewModelScope.launch {

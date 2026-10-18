@@ -14,7 +14,14 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** One file or sub-folder in a system folder (for deleting an installed game). */
-data class FolderEntry(val name: String, val uri: Uri, val isDir: Boolean, val size: Long)
+data class FolderEntry(
+    val name: String,
+    val uri: Uri,
+    val isDir: Boolean,
+    val size: Long,
+    /** Set for the "installed in Vita3K" entry: removed via [Vita3k.uninstall] instead of a file delete. */
+    val vita3kTitleId: String? = null,
+)
 
 /** What's already sitting in one system's folder. */
 data class FolderContents(
@@ -96,6 +103,7 @@ class InstalledIndex(private val context: Context, private val settings: Setting
         val dir = find(m) ?: return null
         val names = HashSet<String>()
         val files = HashSet<String>()
+        // .dpt launch files in the folder count too (PS Vita zips are deleted once installed).
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(dir, DocumentsContract.getDocumentId(dir))
         runCatching {
             context.contentResolver.query(

@@ -11,9 +11,14 @@ import com.gamehub.downloader.data.Connection
 import com.gamehub.downloader.data.FolderEntry
 import com.gamehub.downloader.data.FolderMapping
 import com.gamehub.downloader.data.FolderStorage
+import com.gamehub.downloader.data.InstalledIndex
+import com.gamehub.downloader.data.LaunchFileWriter
+import com.gamehub.downloader.data.SystemRules
 import com.gamehub.downloader.download.DownloadMode
 import com.gamehub.downloader.download.DownloadTask
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.sync.Semaphore
@@ -43,6 +48,11 @@ data class GameState(
     val folder: FolderMapping? = null,
     val folderOk: Boolean = false,
     val prompt: GamePrompt? = null,
+    /** Launch file (.dpt) for this game in the system's launch-file folder, if it exists. */
+    val launchFile: String? = null,
+    /** PS Vita: this game's title ID (from its name, Vita3K, or the zip) and whether Vita3K has it. */
+    val vitaTitleId: String? = null,
+    val vita3kInstalled: Boolean = false,
     val message: String? = null,
 )
 
@@ -53,6 +63,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     val tasks = app.downloads.tasks
     val history = app.history.records
     val installed = app.installed.contents
+    val vita3kApps = app.vita3k.apps
+    val vita3kInstalling = app.vita3k.installing
+    val vita3kFolderSet = app.settings.settings.map { it.vita3kFolderUri != null }
 
     private var api: GameHubApi? = null
 
@@ -78,6 +91,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                     _state.update { it.copy(connection = conn, rom = rom, loading = false) }
                     refreshFolder()
                     resolveRelated(api, rom)
+                    // Re-check Vita3K status whenever its installed list changes.
+                    if (SystemRules.supportsVita3k(rom.platformSlug)) {
+                        viewModelScope.launch { app.vita3k.apps.drop(1).collect { refreshFolder() } }
+                    }
                 }
                 .onFailure { e -> _state.update { it.copy(connection = conn, loading = false, error = e.message ?: "Couldn't load game") } }
         }
@@ -89,7 +106,34 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val conn = s.connection ?: return
         val mapping = app.settings.current().folderFor(conn.id, rom.platformSlug)
         val ok = mapping != null && withContext(Dispatchers.IO) { FolderStorage.hasAccess(app, mapping.treeUri) }
-        _state.update { it.copy(folder = mapping, folderOk = ok) }
+        // PS Vita: title ID from the file name, a Vita3K title match, or the downloaded zip.
+        var vitaId: String? = null
+        var inVita3k = false
+        if (SystemRules.supportsVita3k(rom.platformSlug)) {
+            val apps = app.vita3k.apps.value
+            vitaId = rom.filename?.let { LaunchFileWriter.titleIdFromName(it) }
+                ?: apps.values.firstOrNull {
+                    InstalledIndex.normalize(it.title, isFile = false) == InstalledIndex.normalize(rom.title, isFile = false)
+                }?.titleId
+            if (vitaId == null && mapping != null) {
+                vitaId = withContext(Dispatchers.IO) {
+                    runCatching {
+                        app.installed.findGameFiles(mapping, rom.title, rom.filename)
+                            .filter { it.name.endsWith(".dpt", true) || it.name.endsWith(".zip", true) }
+                            .minByOrNull { if (it.name.endsWith(".dpt", true)) 0 else 1 }?.let { e ->
+                            androidx.documentfile.provider.DocumentFile.fromSingleUri(app, e.uri)?.let { LaunchFileWriter(app).titleIdFor(it) }
+                        }
+                    }.getOrNull()
+                }
+            }
+            inVita3k = vitaId != null && vitaId in apps
+        }
+        val dpt = if (mapping != null && vitaId != null && SystemRules.supportsLaunchFiles(rom.platformSlug)) {
+            runCatching {
+                withContext(Dispatchers.IO) { FolderStorage.resolve(app, mapping) }?.let { LaunchFileWriter(app).existingByTitleId(it)[vitaId]?.name }
+            }.getOrNull()
+        } else null
+        _state.update { it.copy(folder = mapping, folderOk = ok, launchFile = dpt, vitaTitleId = vitaId, vita3kInstalled = inVita3k) }
     }
 
     fun mediaUrl(path: String?, width: Int? = null) = api?.mediaUrl(path, width)
@@ -152,7 +196,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             val slug = s.rom?.platformSlug ?: return@launch
             val label = base?.let { FolderStorage.describe(FolderMapping(conn.id, slug, slug, it, subPath = slug)) }
             // Default the checkbox on for .7z (few emulators read it) and for multi-disc zips.
-            val suggestExtract = mode == DownloadMode.DiscsZip || s.rom?.filename?.endsWith(".7z", ignoreCase = true) == true
+            val canExtract = SystemRules.canExtract(slug)
+            val suggestExtract = canExtract && (mode == DownloadMode.DiscsZip || s.rom?.filename?.endsWith(".7z", ignoreCase = true) == true)
             _state.update { it.copy(prompt = GamePrompt.ChooseFolder(mode, label, suggestExtract)) }
             return@launch
         }
@@ -263,7 +308,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val s = _state.value
         val rom = s.rom ?: return@launch
         val folder = s.folder ?: return@launch
-        val entries = app.installed.findGameFiles(folder, rom.title, rom.filename)
+        val entries = app.installed.findGameFiles(folder, rom.title, rom.filename).let { found ->
+            // A synced .dpt may be named after Vita3K's title; include it by title ID if the name didn't match.
+            val id = s.vitaTitleId
+            val dpt = if (id != null && SystemRules.supportsLaunchFiles(rom.platformSlug)) runCatching {
+                withContext(Dispatchers.IO) { FolderStorage.resolve(app, folder) }?.let { LaunchFileWriter(app).existingByTitleId(it)[id] }
+            }.getOrNull() else null
+            if (dpt != null && found.none { it.uri == dpt.uri }) found + FolderEntry(dpt.name ?: "launch file", dpt.uri, false, dpt.length()) else found
+        }.let { list ->
+            val id = s.vitaTitleId
+            val appDir = id?.let { app.vita3k.apps.value[it]?.appDir }
+            if (s.vita3kInstalled && id != null && appDir != null)
+                list + FolderEntry("Vita3K installation ($id) — save data is kept", appDir, true, 0, vita3kTitleId = id)
+            else list
+        }
         if (entries.isEmpty()) {
             _state.update { it.copy(message = "No files for this game were found in the folder") }
             app.installed.refresh(folder.connectionId)
@@ -285,12 +343,65 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val rom = s.rom ?: return@launch
         val conn = s.connection ?: return@launch
         dismissPrompt()
-        val removed = app.installed.delete(p.entries.filter { it.name in p.selected })
+        val chosen = p.entries.filter { it.name in p.selected }
+        val vita = chosen.mapNotNull { it.vita3kTitleId }.count { app.vita3k.uninstall(it) }
+        val removed = app.installed.delete(chosen.filter { it.vita3kTitleId == null }) + vita
         app.installed.refresh(conn.id)
         app.history.remove(conn.id, rom.id)
         _state.update {
             it.copy(message = if (removed > 0) "Deleted $removed item${if (removed == 1) "" else "s"}" else "Couldn't delete the files")
         }
+    }
+
+    /**
+     * Writes this game's .dpt: from the staged zip if it's still there, otherwise from the title ID
+     * already known (e.g. installed in Vita3K). Named after the game's zip like downloads are.
+     */
+    fun createLaunchFile() = viewModelScope.launch {
+        val s = _state.value
+        val rom = s.rom ?: return@launch
+        val folder = s.folder ?: return@launch
+        val dir = withContext(Dispatchers.IO) { FolderStorage.resolve(app, folder) } ?: return@launch
+        val writer = LaunchFileWriter(app)
+        val zip = app.installed.findGameFiles(folder, rom.title, rom.filename).firstOrNull { it.name.endsWith(".zip", true) }
+        val titleId = zip?.let { androidx.documentfile.provider.DocumentFile.fromSingleUri(app, it.uri)?.let { d -> writer.titleIdFor(d) } }
+            ?: s.vitaTitleId
+        val msg = if (titleId == null) "Couldn't find this game's title ID"
+        else runCatching {
+            writer.existingByTitleId(dir)[titleId]?.delete()
+            "Created ${writer.write(dir, zip?.name ?: rom.filename ?: "${rom.title}.zip", titleId)} ($titleId)"
+        }.getOrElse { it.message ?: "Couldn't write the launch file" }
+        _state.update { it.copy(message = msg) }
+        refreshFolder()
+    }
+
+    /** Runs the Vita flow on the staged zip: .dpt, install into Vita3K, delete the zip (app-wide, survives leaving the page). */
+    fun installInVita3k() {
+        val s = _state.value
+        val rom = s.rom ?: return
+        val folder = s.folder ?: return
+        app.appScope.launch {
+            val zip = app.installed.findGameFiles(folder, rom.title, rom.filename)
+                .firstOrNull { !it.isDir && it.name.endsWith(".zip", ignoreCase = true) }
+                ?.let { androidx.documentfile.provider.DocumentFile.fromSingleUri(app, it.uri) }
+            val msg = if (zip == null) "Download the game first" else app.vita3k.processDownloadedZip(zip, folder).summary()
+            app.installed.refresh(folder.connectionId)
+            _state.update { it.copy(message = msg) }
+            refreshFolder()
+        }
+    }
+
+    fun playInVita3k() {
+        val id = _state.value.vitaTitleId ?: return
+        if (!app.vita3k.play(id)) _state.update { it.copy(message = "Couldn't start Vita3K") }
+    }
+
+    fun setVita3kFolder(uri: Uri) = viewModelScope.launch {
+        if (!app.vita3k.isVita3kFolder(uri.toString())) {
+            _state.update { it.copy(message = "That isn't Vita3K's folder — pick the one that contains ux0") }
+            return@launch
+        }
+        app.settings.setVita3kFolder(uri.toString())
     }
 
     fun cancel(taskId: String) = app.downloads.cancel(taskId)

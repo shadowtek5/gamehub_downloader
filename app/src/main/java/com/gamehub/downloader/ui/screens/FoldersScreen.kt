@@ -49,6 +49,7 @@ import com.gamehub.downloader.GameHubApp
 import com.gamehub.downloader.api.Platform
 import com.gamehub.downloader.data.FolderMapping
 import com.gamehub.downloader.data.FolderStorage
+import com.gamehub.downloader.data.SystemRules
 import com.gamehub.downloader.ui.components.DeckButton
 import com.gamehub.downloader.ui.components.DeckFocusable
 import com.gamehub.downloader.ui.components.DeckToggle
@@ -103,8 +104,25 @@ fun FoldersScreen(initialConnectionId: String?, onBack: () -> Unit) {
     val pickSystem = rememberFolderPicker { uri ->
         val p = pickingFor ?: return@rememberFolderPicker
         val c = connection ?: return@rememberFolderPicker
-        scope.launch { app.settings.setFolder(FolderMapping(c.id, p.slug, p.name, uri.toString())) }
+        val keepExtract = folders.firstOrNull { it.systemKey == p.slug }?.extract ?: false
+        scope.launch { app.settings.setFolder(FolderMapping(c.id, p.slug, p.name, uri.toString(), extract = keepExtract)) }
     }
+    /** Status text for the Vita "Sync with Vita3K" action, per system. */
+    var bulkStatus by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    fun syncVita(m: FolderMapping) {
+        scope.launch {
+            val staging = withContext(Dispatchers.IO) { FolderStorage.resolve(app, m) }
+            val r = runCatching {
+                app.vita3k.sync(m, staging) { status -> bulkStatus = bulkStatus + (m.systemKey to status) }
+            }.getOrElse { e -> bulkStatus = bulkStatus + (m.systemKey to (e.message ?: "Sync failed")); return@launch }
+            app.installed.refresh(m.connectionId)
+            bulkStatus = bulkStatus + (m.systemKey to buildString {
+                append("Installed ${r.processedZips} staged zip${if (r.processedZips == 1) "" else "s"}, created ${r.createdLaunchFiles} launch file${if (r.createdLaunchFiles == 1) "" else "s"}")
+                if (r.problems.isNotEmpty()) append(" • ${r.problems.take(3).joinToString(" • ")}")
+            })
+        }
+    }
+
     val pickBase = rememberFolderPicker { uri ->
         val c = connection ?: return@rememberFolderPicker
         scope.launch { app.settings.setBaseFolder(c.id, uri.toString()) }
@@ -214,6 +232,9 @@ fun FoldersScreen(initialConnectionId: String?, onBack: () -> Unit) {
                         onUseBase = { useBase(listOf(p)) },
                         onClear = { scope.launch { app.settings.clearFolder(connection.id, p.slug) } },
                         onExtract = { on -> scope.launch { app.settings.setExtract(connection.id, p.slug, on) } },
+                        onCreateAllLaunchFiles = { mapping?.let { syncVita(it) } },
+                        launcherStatus = bulkStatus[p.slug],
+                        vita3kFolderSet = settings?.vita3kFolderUri != null,
                     )
                 }
             }
@@ -243,6 +264,9 @@ private fun SystemFolderRow(
     onUseBase: () -> Unit,
     onClear: () -> Unit,
     onExtract: (Boolean) -> Unit,
+    onCreateAllLaunchFiles: () -> Unit,
+    launcherStatus: String?,
+    vita3kFolderSet: Boolean,
 ) {
     val info: @Composable (Modifier) -> Unit = { m ->
         Row(m, verticalAlignment = Alignment.CenterVertically) {
@@ -287,7 +311,7 @@ private fun SystemFolderRow(
                 actions()
             }
         }
-        if (mapping != null) {
+        if (mapping != null && SystemRules.canExtract(platform.slug)) {
             DeckToggle(
                 label = "Extract .zip / .7z after download",
                 description = "Unpack into this folder and delete the archive",
@@ -295,6 +319,29 @@ private fun SystemFolderRow(
                 onCheckedChange = onExtract,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+        // PS Vita: games stay zipped; a .dpt launch file per game lets Cocoon scrape and launch them.
+        if (mapping != null && SystemRules.supportsLaunchFiles(platform.slug)) {
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(DeckColors.SurfaceHigh).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Launch files (.dpt) for Cocoon", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(
+                    "Point Cocoon at this folder. After each download the game is installed into Vita3K, its .dpt is " +
+                        "written here next to the zip, and the zip is deleted. Cocoon only sees the .dpt files.",
+                    color = DeckColors.TextDim, fontSize = 12.sp,
+                )
+                DeckButton("Sync with Vita3K", onCreateAllLaunchFiles, icon = Icons.Default.AutoFixHigh)
+                Text(
+                    "Installs any zips still in this folder, and creates .dpt files for games already in Vita3K.",
+                    color = DeckColors.TextDim, fontSize = 12.sp,
+                )
+                launcherStatus?.let { Text(it, color = DeckColors.Success, fontSize = 12.sp) }
+            }
+        }
+        if (mapping != null && SystemRules.supportsVita3k(platform.slug) && !vita3kFolderSet) {
+            Text("Set Vita3K's folder in Settings › Vita3K so downloads can be installed.", color = DeckColors.Warning, fontSize = 12.sp)
         }
     }
 }

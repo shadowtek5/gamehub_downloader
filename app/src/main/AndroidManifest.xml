@@ -13,6 +13,11 @@
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
+    <!-- Vita3K: needed (Android 11+ package visibility) to detect it and launch games in it. -->
+    <queries>
+        <package android:name="org.vita3k.emulator" />
+    </queries>
+
     <application
         android:name=".GameHubApp"
         android:allowBackup="false"

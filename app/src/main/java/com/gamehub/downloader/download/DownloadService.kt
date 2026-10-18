@@ -18,6 +18,7 @@ import com.gamehub.downloader.api.ApiException
 import com.gamehub.downloader.api.GameHubApi
 import com.gamehub.downloader.data.DownloadRecord
 import com.gamehub.downloader.data.FolderStorage
+import com.gamehub.downloader.data.SystemRules
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -231,7 +232,7 @@ class DownloadService : Service() {
 
         // Optional per-system step: unpack .zip/.7z into the folder, then remove the archive.
         var extracted: Int? = null
-        if (task.folder.extract && ArchiveExtractor.isSupported(finalName)) {
+        if (task.folder.extract && SystemRules.canExtract(task.systemKey) && ArchiveExtractor.isSupported(finalName)) {
             val archive = folder.findFile(finalName) ?: throw ApiException(0, "Downloaded file went missing before extraction")
             manager.update(id) { it.copy(state = DownloadState.Extracting, downloadedBytes = 0, totalBytes = 0, bytesPerSecond = 0) }
             refreshNotification()
@@ -250,7 +251,20 @@ class DownloadService : Service() {
             extracted = result.files
         }
 
-        manager.update(id) { it.copy(state = DownloadState.Completed, bytesPerSecond = 0, error = null, extractedFiles = extracted) }
+        // PS Vita: the zip is only a staging file — write the .dpt, install into Vita3K, delete the zip.
+        var note: String? = null
+        if (SystemRules.supportsVita3k(task.systemKey)) {
+            manager.update(id) { it.copy(state = DownloadState.Installing, downloadedBytes = 0, totalBytes = 0, bytesPerSecond = 0) }
+            refreshNotification()
+            val archive = folder.findFile(finalName)
+            note = if (archive == null) "Downloaded file went missing"
+            else app.vita3k.processDownloadedZip(archive, task.folder) { done, total ->
+                manager.update(id) { it.copy(downloadedBytes = done, totalBytes = total) }
+                refreshNotification()
+            }.summary()
+        }
+
+        manager.update(id) { it.copy(state = DownloadState.Completed, bytesPerSecond = 0, error = null, extractedFiles = extracted, note = note) }
         app.installed.refresh(task.connectionId)
         app.history.add(
             DownloadRecord(
@@ -290,7 +304,8 @@ class DownloadService : Service() {
     private fun refreshNotification() {
         val tasks = manager.tasks.value
         val active = tasks.firstOrNull {
-            it.state == DownloadState.Running || it.state == DownloadState.Retrying || it.state == DownloadState.Extracting
+            it.state == DownloadState.Running || it.state == DownloadState.Retrying ||
+                it.state == DownloadState.Extracting || it.state == DownloadState.Installing
         }
         val queued = tasks.count { it.state == DownloadState.Queued }
         val nm = NotificationManagerCompat.from(this)

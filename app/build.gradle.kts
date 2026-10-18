@@ -13,8 +13,8 @@ android {
         applicationId = "com.gamehub.downloader"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     // Release signing comes from ~/.gradle/gradle.properties (never committed):
@@ -90,4 +90,6 @@ dependencies {
     // .7z extraction (LZMA/LZMA2 via xz); .zip uses java.util.zip
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("org.tukaani:xz:1.10")
+
+    testImplementation("junit:junit:4.13.2")
 }

@@ -52,6 +52,8 @@ data class AppSettings(
     val connections: List<Connection> = emptyList(),
     val activeConnectionId: String? = null,
     val folders: List<FolderMapping> = emptyList(),
+    /** Vita3K's storage folder (the one containing ux0), granted by the user. */
+    val vita3kFolderUri: String? = null,
 ) {
     val activeConnection: Connection?
         get() = connections.firstOrNull { it.id == activeConnectionId } ?: connections.firstOrNull()
@@ -116,6 +118,8 @@ class SettingsRepository(private val context: Context) {
             if (it.connectionId == connectionId && it.systemKey == systemKey) it.copy(extract = extract) else it
         })
     }
+
+    suspend fun setVita3kFolder(treeUri: String?) = update { it.copy(vita3kFolderUri = treeUri) }
 
     /** Show or hide systems (one, a whole maker, or a preset). */
     suspend fun setSystemsVisible(connectionId: String, slugs: Collection<String>, visible: Boolean) = updateConnection(connectionId) { c ->

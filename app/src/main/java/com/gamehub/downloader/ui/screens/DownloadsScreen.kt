@@ -133,9 +133,9 @@ private fun TaskRow(t: DownloadTask, imageUrl: String?) {
             Text("${t.systemName} • ${t.fileName}", color = DeckColors.TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(6.dp))
             when (t.state) {
-                DownloadState.Running, DownloadState.Retrying, DownloadState.Queued, DownloadState.Extracting -> {
+                DownloadState.Running, DownloadState.Retrying, DownloadState.Queued, DownloadState.Extracting, DownloadState.Installing -> {
                     val pct = t.percent
-                    if ((t.state == DownloadState.Running || t.state == DownloadState.Extracting) && pct != null) {
+                    if ((t.state == DownloadState.Running || t.state == DownloadState.Extracting || t.state == DownloadState.Installing) && pct != null) {
                         LinearProgressIndicator(progress = { pct / 100f }, Modifier.fillMaxWidth(), color = DeckColors.Accent, trackColor = DeckColors.SurfaceHigh)
                     } else {
                         LinearProgressIndicator(Modifier.fillMaxWidth(), color = if (t.state == DownloadState.Retrying) DeckColors.Warning else DeckColors.TextDim, trackColor = DeckColors.SurfaceHigh)
@@ -146,6 +146,7 @@ private fun TaskRow(t: DownloadTask, imageUrl: String?) {
                             DownloadState.Queued -> "Queued"
                             DownloadState.Retrying -> t.error ?: "Reconnecting…"
                             DownloadState.Extracting -> "Extracting archive…" + (pct?.let { " $it%" } ?: "")
+                            DownloadState.Installing -> "Installing in Vita3K…" + (pct?.let { " $it%" } ?: "")
                             else -> buildString {
                                 pct?.let { append("$it% • ") }
                                 append(formatBytes(t.downloadedBytes))
@@ -159,7 +160,8 @@ private fun TaskRow(t: DownloadTask, imageUrl: String?) {
                 DownloadState.Completed -> StatusLine(
                     Icons.Default.CheckCircle, DeckColors.Success,
                     "Saved to ${FolderStorage.describe(t.folder)} • " +
-                        (t.extractedFiles?.let { "extracted $it file${if (it == 1) "" else "s"}" } ?: formatBytes(t.downloadedBytes)),
+                        (t.extractedFiles?.let { "extracted $it file${if (it == 1) "" else "s"}" } ?: formatBytes(t.downloadedBytes)) +
+                        (t.note?.let { " • $it" } ?: ""),
                 )
                 DownloadState.Failed -> StatusLine(Icons.Default.Error, DeckColors.Error, t.error ?: "Failed")
                 DownloadState.Cancelled -> StatusLine(Icons.Default.Close, DeckColors.TextDim, "Cancelled")

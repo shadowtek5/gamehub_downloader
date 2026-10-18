@@ -70,6 +70,7 @@ import coil3.compose.AsyncImage
 import com.gamehub.downloader.api.BrowseRom
 import com.gamehub.downloader.api.Platform
 import com.gamehub.downloader.data.InstalledIndex
+import com.gamehub.downloader.data.SystemRules
 import com.gamehub.downloader.download.DownloadState
 import com.gamehub.downloader.download.DownloadTask
 import com.gamehub.downloader.ui.DeckLayout
@@ -107,8 +108,12 @@ fun LibraryScreen(
         onDispose { lifecycle.removeObserver(obs) }
     }
     val connKey = state.connection?.id.orEmpty()
+    val vitaApps by vm.vita3kApps.collectAsState()
+    val vitaTitles = remember(vitaApps) { vitaApps.values.map { InstalledIndex.normalize(it.title, isFile = false) }.toSet() }
     val isInstalled: (BrowseRom) -> Boolean = { rom ->
-        installed["$connKey|${rom.platformSlug}"]?.names?.contains(InstalledIndex.normalize(rom.title, isFile = false)) == true
+        val key = InstalledIndex.normalize(rom.title, isFile = false)
+        installed["$connKey|${rom.platformSlug}"]?.names?.contains(key) == true ||
+            (SystemRules.supportsVita3k(rom.platformSlug) && key in vitaTitles)
     }
     val installedCount: (String) -> Int? = { slug -> installed["$connKey|$slug"]?.count }
     val layout = rememberDeckLayout()
@@ -539,6 +544,7 @@ private fun GameCard(
                                 DownloadState.Queued -> "Queued"
                                 DownloadState.Retrying -> "Reconnecting…"
                                 DownloadState.Extracting -> "Extracting…"
+                                DownloadState.Installing -> "Installing…"
                                 else -> task.percent?.let { "$it%" } ?: "Downloading"
                             },
                             fontSize = 11.sp,

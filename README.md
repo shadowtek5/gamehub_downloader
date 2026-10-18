@@ -10,6 +10,13 @@ A controller-first Android app (styled like the Steam Deck UI) for browsing a [G
   - Interrupted transfers resume with HTTP `Range` and retry automatically after a network drop.
   - Files are written as `name.part` and renamed when complete.
 - **Notifications.** You get live progress with a Cancel action, a completed or failed alert for each game, and a summary when the queue empties.
+- **PS Vita and Vita3K.** Set Vita3K's storage folder (the one holding `ux0`) in *Settings › Vita3K*. Vita zips are never extracted. Instead, each download is processed like this:
+  - The game is installed straight into Vita3K's `ux0`. Zips in "installed layout" (`app/`, `patch/`) and zips with the game at the root both work.
+  - A Daijishou Player Template `.dpt` (`[vita_game_id] <TITLE_ID>`) is written next to the zip with the same name, for Cocoon FE to scrape and launch.
+  - The zip is then deleted.
+  - Encrypted dumps need their license: a `sce_sys/package/work.bin` in the zip is copied to `ux0/license`. Without one, the install is refused and an existing install is left alone.
+  - *Folders › Sync with Vita3K* installs leftover zips and creates `.dpt` files for games already in Vita3K.
+  - Delete removes the `.dpt` and the Vita3K install and keeps save data. Games can be played in Vita3K from their page.
 - **Adaptive layout.** Landscape shows a systems rail plus a cover grid. Portrait, and narrow screens like the Thor's second display, show system tabs plus a grid.
 
 ## Controls

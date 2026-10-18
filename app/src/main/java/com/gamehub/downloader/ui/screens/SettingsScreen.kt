@@ -65,6 +65,7 @@ fun SettingsScreen(
     onOpenFolders: (String?) -> Unit,
     onOpenControls: () -> Unit,
     onOpenSystems: (String?) -> Unit,
+    onOpenVita3k: () -> Unit,
 ) {
     val app = LocalContext.current.applicationContext as GameHubApp
     val settings by app.settings.settings.collectAsState(initial = null)
@@ -113,6 +114,17 @@ fun SettingsScreen(
                     if (c == null || c.hiddenSystems.isEmpty()) "All systems shown. One tap to keep only Nintendo, Sega & Sony"
                     else "${c.hiddenSystems.size} system${if (c.hiddenSystems.size == 1) "" else "s"} hidden",
                 ) { DeckButton("Open", { onOpenSystems(c?.id) }, enabled = c != null) }
+            }
+
+            item { SectionTitle("Emulators", Modifier.padding(top = 14.dp)) }
+            item {
+                val vitaCount = app.vita3k.apps.collectAsState().value.size
+                SettingsRow(
+                    Icons.Default.SportsEsports,
+                    "Vita3K",
+                    if (settings?.vita3kFolderUri == null) "Set Vita3K's folder to install PS Vita games from zips and see what's installed"
+                    else "$vitaCount game${if (vitaCount == 1) "" else "s"} installed • install, play and uninstall",
+                ) { DeckButton("Open", onOpenVita3k) }
             }
 
             item { SectionTitle("Download folders", Modifier.padding(top = 14.dp)) }

@@ -37,7 +37,23 @@ class ArchiveExtractor(private val context: Context) {
         }
     }
 
-    private suspend fun extractZip(archive: DocumentFile, tree: DocTree, onProgress: (Long, Long) -> Unit): Result {
+    /**
+     * Extracts a zip into [dest], rewriting each entry's path with [map] (return null to skip an
+     * entry). Used to install Vita games into Vita3K's ux0 layout.
+     */
+    suspend fun extractZipMapped(
+        archive: DocumentFile,
+        dest: DocumentFile,
+        map: (List<String>) -> List<String>?,
+        onProgress: (Long, Long) -> Unit,
+    ): Result = extractZip(archive, DocTree(context, dest.uri), onProgress, map)
+
+    private suspend fun extractZip(
+        archive: DocumentFile,
+        tree: DocTree,
+        onProgress: (Long, Long) -> Unit,
+        map: (List<String>) -> List<String>? = { it },
+    ): Result {
         val total = archive.length()
         val input = context.contentResolver.openInputStream(archive.uri) ?: throw IOException("Can't open archive")
         val counting = CountingInputStream(input)
@@ -47,8 +63,7 @@ class ArchiveExtractor(private val context: Context) {
             while (true) {
                 val entry = zip.nextEntry ?: break
                 currentCoroutineContext().ensureActive()
-                val segments = safeSegments(entry.name)
-                if (segments.isEmpty()) continue
+                val segments = map(safeSegments(entry.name))?.takeIf { it.isNotEmpty() } ?: continue
                 if (entry.isDirectory) {
                     tree.ensureDirs(segments)
                     continue

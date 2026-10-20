@@ -610,7 +610,7 @@ class SaveSync(private val app: GameHubApp) {
         val coreDirs = HashMap<String, DocumentFile>()
         fun scan(dir: DocumentFile, core: String?) = dir.listFiles().forEach { f ->
             val m = STATE_FILE.matchEntire(f.name.orEmpty()) ?: return@forEach
-            if (f.isFile) locals += LocalState(f, core, m.groupValues[1], m.groupValues[2])
+            if (f.isFile) locals += LocalState(f, core, m.groupValues[1], m.groupValues[2].removePrefix("."))
         }
         root.listFiles().forEach { f -> if (f.isDirectory) { coreDirs[f.name.orEmpty()] = f; scan(f, f.name) } }
         scan(root, null)

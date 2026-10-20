@@ -13,8 +13,8 @@ android {
         applicationId = "com.gamehub.downloader"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.2.1"
     }
 
     // Release signing comes from ~/.gradle/gradle.properties (never committed):

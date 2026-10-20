@@ -71,7 +71,21 @@ class SaveSync(private val app: GameHubApp) {
     }
 
     @Serializable
-    private data class State(val base: Map<String, String> = emptyMap(), val report: Report? = null)
+    private data class State(
+        val base: Map<String, String> = emptyMap(),
+        val report: Report? = null,
+        /** Folder each source was synced from; a change starts that source's history afresh. */
+        val roots: Map<String, String> = emptyMap(),
+    )
+
+    /** Sync-id prefix of each source's saves, and the folder it reads from. */
+    private fun roots(s: AppSettings, connectionId: String): Map<String, String> = buildMap {
+        s.saveSync.retroarchSavesUri?.let { put("battery:", it) }
+        s.saveSync.ppssppUri?.let { put("device:psp:", it) }
+        s.vita3kFolderUri?.let { put("device:vita:", it) }
+        s.saveSync.azaharUri?.let { put("device:3ds:", it) }
+        s.folderFor(connectionId, "nds")?.let { put("device:nds:", it.treeUri + "/" + it.subPath) }
+    }
 
     data class Status(val running: Boolean = false, val progress: String = "", val report: Report? = null)
 
@@ -194,6 +208,10 @@ class SaveSync(private val app: GameHubApp) {
         val ctx = context() ?: return Report(at = System.currentTimeMillis(), auto = auto, errors = listOf("Not connected to a GameHub server"))
         val state = loadState(ctx.connectionId)
         val base = state.base.toMutableMap()
+        // A different folder for a source isn't the copy we synced before: forget its history so
+        // nothing there is mistaken for an already-synced save (it's compared afresh instead).
+        val roots = roots(ctx.settings, ctx.connectionId)
+        roots.forEach { (prefix, root) -> if (state.roots[prefix] != root) base.keys.removeAll { it.startsWith(prefix) } }
         val log = mutableListOf<LogEntry>()
         val conflicts = mutableListOf<Conflict>()
         val errors = mutableListOf<String>()
@@ -217,7 +235,7 @@ class SaveSync(private val app: GameHubApp) {
                         log += entry(slot, Action.CONFLICT, "Changed on this device and on GameHub")
                     }
                 }
-            }.onFailure { e ->
+            }.also { (slot as? DeviceSlot)?.release() }.onFailure { e ->
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 if (e is SaveConflictException) {
                     conflicts += Conflict(slot.id, slot.title, slot.source, slot.localModified(), ctx.remoteUpdatedAt(slot))
@@ -241,7 +259,7 @@ class SaveSync(private val app: GameHubApp) {
             errors = errors,
             log = log,
         )
-        saveState(ctx.connectionId, State(base, report))
+        saveState(ctx.connectionId, State(base, report, roots))
         return report
     }
 
@@ -345,10 +363,19 @@ class SaveSync(private val app: GameHubApp) {
 
         fun readEntries(): Map<String, ByteArray> = cached ?: run {
             val p = parent() ?: return emptyMap()
+            val files = names.mapNotNull { n -> p.findFile(n)?.let { n to it } }
+            // Saves are small; anything this big is game data (installs, caches) and would exhaust memory.
+            val total = files.sumOf { (_, f) -> sizeOf(f) }
+            if (total > MAX_DEVICE_SAVE) error("too large to sync (${total / (1024 * 1024)} MB) — that's more than save data")
             val out = sortedMapOf<String, ByteArray>()
-            names.forEach { n -> p.findFile(n)?.let { collect(it, n, out) } }
+            files.forEach { (n, f) -> collect(f, n, out) }
             out.also { cached = it }
         }
+
+        /** Drops the in-memory copy once this save has been synced. */
+        fun release() { cached = null }
+
+        private fun sizeOf(f: DocumentFile): Long = if (f.isDirectory) f.listFiles().sumOf { sizeOf(it) } else f.length()
 
         private fun collect(f: DocumentFile, rel: String, out: MutableMap<String, ByteArray>) {
             if (f.isDirectory) f.listFiles().forEach { c -> collect(c, "$rel/${c.name}", out) }
@@ -454,7 +481,7 @@ class SaveSync(private val app: GameHubApp) {
         }
         val savedata = root.findFile("SAVEDATA") ?: root.findFile("PSP")?.findFile("SAVEDATA")
         val groups = savedata?.listFiles().orEmpty()
-            .filter { it.isDirectory && PSP_ID.matches(it.name.orEmpty().take(9)) }
+            .filter { it.isDirectory && PSP_ID.matches(it.name.orEmpty().take(9)) && !isPspInstallData(it.name.orEmpty()) }
             .groupBy { it.name!!.take(9).uppercase() }
         val slots = groups.map { (id, dirs) ->
             val title = dirs.firstNotNullOfOrNull { d ->
@@ -529,11 +556,22 @@ class SaveSync(private val app: GameHubApp) {
         }
     }
 
+    /**
+     * Some PSP games install hundreds of MB of game data into SAVEDATA (e.g. "ULJS00266INST" next to
+     * the real save "ULJS00266SYSTEM"). That isn't save data, so it's never synced.
+     */
+    private fun isPspInstallData(name: String): Boolean {
+        val n = name.uppercase()
+        return n.endsWith("INST") || n.endsWith("INSTALL") || n.contains("INSTALLDATA")
+    }
+
     /** PSP saves are the SAVEDATA folders whose names start with the game id (ULUS10336DATA00, …). */
-    private fun pspAccepts(id: String): (String) -> Boolean = { it.startsWith(id, ignoreCase = true) }
+    private fun pspAccepts(id: String): (String) -> Boolean = { it.startsWith(id, ignoreCase = true) && !isPspInstallData(it) }
 
     companion object {
         private val PSP_ID = Regex("[A-Z]{4}\\d{5}")
+        /** Largest device save synced (a whole Vita/3DS save folder is a few MB at most). */
+        private const val MAX_DEVICE_SAVE = 128L * 1024 * 1024
         private val VITA_ID = Regex("PCS[A-Z]\\d{5}")
         private val HEX8 = Regex("[0-9a-fA-F]{8}")
         private val HEX16 = Regex("[0-9a-fA-F]{16}")

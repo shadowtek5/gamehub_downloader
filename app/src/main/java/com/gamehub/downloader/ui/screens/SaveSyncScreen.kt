@@ -73,8 +73,16 @@ fun SaveSyncScreen(onBack: () -> Unit) {
         return true
     }
     val pickRetroarch = rememberFolderPicker { uri ->
-        scope.launch { app.settings.updateSaveSync { it.copy(retroarchSavesUri = uri.toString()) } }
-        message = null
+        val dir = DocumentFile.fromTreeUri(context, uri)
+        val hasStates = { d: DocumentFile -> d.listFiles().take(50).any { it.name.orEmpty().contains(".state", ignoreCase = true) } }
+        val isStates = dir != null && (dir.name.equals("states", ignoreCase = true) || hasStates(dir) ||
+            dir.listFiles().filter { it.isDirectory }.take(10).any { hasStates(it) })
+        if (isStates) {
+            message = "That's RetroArch's save states folder. Pick the \"saves\" folder next to it (Internal storage › RetroArch › saves)."
+        } else {
+            scope.launch { app.settings.updateSaveSync { it.copy(retroarchSavesUri = uri.toString()) } }
+            message = null
+        }
     }
     val pickPpsspp = rememberFolderPicker { uri ->
         if (has(uri, "SAVEDATA") || has(uri, "PSP", "SAVEDATA") || has(uri, "PSP")) {

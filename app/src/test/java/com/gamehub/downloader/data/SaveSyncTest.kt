@@ -47,6 +47,38 @@ class SaveSyncTest {
     @Test fun sha256MatchesKnownValue() =
         assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", SaveSync.sha256("abc".toByteArray()))
 
+    /** Builds an RZIP file the way RetroArch writes compressed states: "#RZIPv\u0001#", chunk size, total size, zlib chunks. */
+    private fun rzip(raw: ByteArray, chunk: Int = 4096): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write("#RZIPv".toByteArray()); out.write(1); out.write('#'.code)
+        val hdr = java.nio.ByteBuffer.allocate(12).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(chunk).putLong(raw.size.toLong())
+        out.write(hdr.array())
+        raw.toList().chunked(chunk).forEach { part ->
+            val z = ByteArrayOutputStream().also { b -> java.util.zip.DeflaterOutputStream(b).use { it.write(part.toByteArray()) } }.toByteArray()
+            out.write(java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(z.size).array())
+            out.write(z)
+        }
+        return out.toByteArray()
+    }
+
+    /** Same shape as a real FCEUmm state: "RASTATE\u0001" + a MEM block, 22000 bytes. */
+    private val rastate = "RASTATE\u0001MEM ".toByteArray() + ByteArray(22000 - 12) { (it * 31 % 256).toByte() }
+
+    @Test fun unrzipDecodesRetroArchStates() {
+        val packed = rzip(rastate)
+        assertTrue(packed.size < rastate.size)
+        assertArrayEquals(rastate, SaveSync.unrzip(packed))
+        assertArrayEquals(rastate, SaveSync.unrzip(rzip(rastate, chunk = 131072)))
+    }
+
+    @Test fun uncompressedStatesPassThrough() = assertArrayEquals(rastate, SaveSync.unrzip(rastate))
+
+    @Test(expected = IllegalStateException::class)
+    fun truncatedRzipIsRejected() {
+        val packed = rzip(rastate)
+        SaveSync.unrzip(packed.copyOf(packed.size - 10))
+    }
+
     /** Core folder names as RetroArch writes them on the Thor (Settings › Saving › Sort saves by core). */
     @Test fun retroarchCoresMapToSystems() {
         assertTrue("gb" in RetroArchCores.systemsFor("Gambatte"))

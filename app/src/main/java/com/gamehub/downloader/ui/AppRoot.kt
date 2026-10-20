@@ -96,13 +96,20 @@ object Routes {
 }
 
 @Composable
-fun AppRoot(openDownloads: MutableStateFlow<Boolean>) {
+fun AppRoot(openDownloads: MutableStateFlow<Boolean>, openSaveSync: MutableStateFlow<Boolean>) {
     val nav = rememberNavController()
     val jumpToDownloads by openDownloads.collectAsState()
     LaunchedEffect(jumpToDownloads) {
         if (jumpToDownloads) {
             nav.navigate(Routes.DOWNLOADS) { launchSingleTop = true }
             openDownloads.value = false
+        }
+    }
+    val jumpToSaveSync by openSaveSync.collectAsState()
+    LaunchedEffect(jumpToSaveSync) {
+        if (jumpToSaveSync) {
+            nav.navigate(Routes.SAVE_SYNC) { launchSingleTop = true }
+            openSaveSync.value = false
         }
     }
 

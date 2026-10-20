@@ -19,16 +19,16 @@ import com.gamehub.downloader.ui.AppRoot
 import com.gamehub.downloader.ui.GameAction
 import com.gamehub.downloader.ui.Gamepad
 import com.gamehub.downloader.ui.theme.DeckTheme
-import android.widget.Toast
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
     /** Set when launched from a download notification so the UI jumps to the queue. */
     val openDownloads = MutableStateFlow(false)
+
+    /** Set when launched from a save sync notification so the UI jumps to Settings › Save sync. */
+    val openSaveSync = MutableStateFlow(false)
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -46,21 +46,16 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         setContent {
-            DeckTheme { AppRoot(openDownloads) }
+            DeckTheme { AppRoot(openDownloads, openSaveSync) }
         }
     }
 
     override fun onStart() {
         super.onStart()
-        // Settings › Save sync › "Sync when the app opens" (throttled inside SaveSync).
+        // Settings › Save sync › "Sync when the app opens" (throttled inside SaveSync; the outcome
+        // is posted as a notification when anything changed).
         val app = application as GameHubApp
-        app.appScope.launch {
-            val report = app.saveSync.autoSyncIfDue() ?: return@launch
-            if (report.uploaded + report.downloaded + report.conflicts.size + report.errors.size == 0) return@launch
-            withContext(Dispatchers.Main) {
-                Toast.makeText(this@MainActivity, "Saves: ${report.summary()}", Toast.LENGTH_LONG).show()
-            }
-        }
+        app.appScope.launch { app.saveSync.autoSyncIfDue() }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -70,6 +65,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_OPEN_DOWNLOADS, false) == true) openDownloads.value = true
+        if (intent?.getBooleanExtra(EXTRA_OPEN_SAVE_SYNC, false) == true) openSaveSync.value = true
     }
 
     /**
@@ -117,5 +113,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_OPEN_DOWNLOADS = "open_downloads"
+        const val EXTRA_OPEN_SAVE_SYNC = "open_save_sync"
     }
 }

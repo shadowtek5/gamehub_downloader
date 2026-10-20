@@ -76,11 +76,26 @@ class SaveSync(private val app: GameHubApp) {
         val report: Report? = null,
         /** Folder each source was synced from; a change starts that source's history afresh. */
         val roots: Map<String, String> = emptyMap(),
+        /** RetroArch save states per game (ROM id as text). */
+        val states: Map<String, StateRecord> = emptyMap(),
     )
+
+    /** What was synced for one game's save states: per slot the state uploaded, plus the last one downloaded. */
+    @Serializable
+    private data class StateRecord(
+        val uploaded: Map<String, UploadedState> = emptyMap(),
+        val downloaded: String? = null,
+        /** Hashes of states this device uploaded earlier and later replaced — never "made elsewhere". */
+        val retired: List<String> = emptyList(),
+    )
+
+    @Serializable
+    private data class UploadedState(val sha256: String, val remoteId: Long)
 
     /** Sync-id prefix of each source's saves, and the folder it reads from. */
     private fun roots(s: AppSettings, connectionId: String): Map<String, String> = buildMap {
         s.saveSync.retroarchSavesUri?.let { put("battery:", it) }
+        s.saveSync.retroarchStatesUri?.let { put("state:", it) }
         s.saveSync.ppssppUri?.let { put("device:psp:", it) }
         s.vita3kFolderUri?.let { put("device:vita:", it) }
         s.saveSync.azaharUri?.let { put("device:3ds:", it) }
@@ -129,23 +144,28 @@ class SaveSync(private val app: GameHubApp) {
         return syncAll(auto = true)
     }
 
-    fun anySourceConfigured(s: AppSettings): Boolean = s.saveSync.retroarchSavesUri != null || s.saveSync.ppssppUri != null ||
+    fun anySourceConfigured(s: AppSettings): Boolean = s.saveSync.retroarchSavesUri != null || s.saveSync.retroarchStatesUri != null || s.saveSync.ppssppUri != null ||
         s.saveSync.azaharUri != null || (s.saveSync.vita && s.vita3kFolderUri != null) ||
         (s.saveSync.nds && s.activeConnection?.let { s.folderFor(it.id, "nds") } != null)
 
-    /** Syncs every save from every configured emulator (optionally only one game). */
-    suspend fun syncAll(auto: Boolean = false, onlyRomId: Long? = null): Report = lock.withLock {
+    /**
+     * Syncs every save from every configured emulator (optionally only one game). [notify] posts the
+     * outcome as an Android notification (automatic and per-game syncs; Sync now shows it on screen).
+     */
+    suspend fun syncAll(auto: Boolean = false, onlyRomId: Long? = null, notify: Boolean = auto || onlyRomId != null): Report = lock.withLock {
         _status.value = _status.value.copy(running = true, progress = "Looking for saves…")
-        try {
-            val report = withContext(Dispatchers.IO) { runSync(auto, onlyRomId) }
-            _status.value = Status(report = report)
-            report
+        SaveSyncNotifications.progress(app, 0, 0, "Looking for saves…")
+        val report = try {
+            withContext(Dispatchers.IO) { runSync(auto, onlyRomId) }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
-            val report = Report(at = System.currentTimeMillis(), auto = auto, errors = listOf(e.message ?: e.toString()))
-            _status.value = Status(report = report)
-            report
+            Report(at = System.currentTimeMillis(), auto = auto, errors = listOf(e.message ?: e.toString()))
+        } finally {
+            SaveSyncNotifications.clearProgress(app)
         }
+        _status.value = Status(report = report)
+        if (notify) SaveSyncNotifications.result(app, report)
+        report
     }
 
     enum class Keep { DEVICE, GAMEHUB }
@@ -212,6 +232,7 @@ class SaveSync(private val app: GameHubApp) {
         // nothing there is mistaken for an already-synced save (it's compared afresh instead).
         val roots = roots(ctx.settings, ctx.connectionId)
         roots.forEach { (prefix, root) -> if (state.roots[prefix] != root) base.keys.removeAll { it.startsWith(prefix) } }
+        val stateRecords = if (state.roots["state:"] == roots["state:"]) state.states.toMutableMap() else mutableMapOf()
         val log = mutableListOf<LogEntry>()
         val conflicts = mutableListOf<Conflict>()
         val errors = mutableListOf<String>()
@@ -220,6 +241,7 @@ class SaveSync(private val app: GameHubApp) {
         val slots = collectSlots(ctx, errors).let { all -> if (onlyRomId == null) all else all.filter { it.romId == onlyRomId } }
         slots.forEachIndexed { i, slot ->
             _status.value = _status.value.copy(progress = "Syncing ${i + 1}/${slots.size}: ${slot.title}")
+            SaveSyncNotifications.progress(app, i, slots.size, slot.title)
             runCatching {
                 val local = slot.localHash()
                 val remote = ctx.remoteHash(slot)
@@ -247,6 +269,14 @@ class SaveSync(private val app: GameHubApp) {
             }
         }
 
+        ctx.settings.saveSync.retroarchStatesUri?.let { uri ->
+            runCatching { syncStates(ctx, uri, slots.filterIsInstance<BatterySlot>(), stateRecords, log, errors, onlyRomId) }
+                .onFailure { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    errors += "RetroArch save states: ${e.message ?: e}"
+                }
+        }
+
         val report = Report(
             at = System.currentTimeMillis(),
             auto = auto,
@@ -259,7 +289,7 @@ class SaveSync(private val app: GameHubApp) {
             errors = errors,
             log = log,
         )
-        saveState(ctx.connectionId, State(base, report, roots))
+        saveState(ctx.connectionId, State(base, report, roots, stateRecords))
         return report
     }
 
@@ -323,7 +353,9 @@ class SaveSync(private val app: GameHubApp) {
         override val title: String,
         private var file: DocumentFile?,
         private val dir: () -> DocumentFile?,
-        private val fileName: String,
+        val fileName: String,
+        /** RetroArch core folder the save is in (null when saves aren't sorted by core). */
+        val core: String?,
     ) : Slot() {
         override val id = "battery:$romId"
         override val source = "RetroArch"
@@ -451,7 +483,7 @@ class SaveSync(private val app: GameHubApp) {
             if (!seen.add(pick.id)) continue
             if (l.core != null && pick.platform !in learned) learned[pick.platform] = l.core
             val core = l.core
-            slots += BatterySlot(pick.id, pick.title.ifBlank { l.base }, l.file, { if (core == null) root else coreDirs[core] }, l.file.name!!)
+            slots += BatterySlot(pick.id, pick.title.ifBlank { l.base }, l.file, { if (core == null) root else coreDirs[core] }, l.file.name!!, core)
         }
         if (learned != ctx.settings.saveSync.retroarchCoreDirs) app.settings.updateSaveSync { it.copy(retroarchCoreDirs = learned) }
 
@@ -467,7 +499,7 @@ class SaveSync(private val app: GameHubApp) {
             if (sortedByCore && core == null) continue
             val dir: () -> DocumentFile? = if (!sortedByCore) ({ root }) else ({ coreDirs[core] ?: root.findFile(core!!) ?: root.createDirectory(core!!) })
             seen += r.romId
-            slots += BatterySlot(r.romId, rom.title, null, dir, fileName.substringBeforeLast('.') + ".srm")
+            slots += BatterySlot(r.romId, rom.title, null, dir, fileName.substringBeforeLast('.') + ".srm", if (sortedByCore) core else null)
         }
         return slots
     }
@@ -557,6 +589,129 @@ class SaveSync(private val app: GameHubApp) {
     }
 
     /**
+     * RetroArch save states ↔ GameHub save states (the browser player's list), best effort: both are
+     * the same libretro state ("RASTATE") when the core versions match. Up: each RetroArch slot that's
+     * new is uploaded as "RetroArch slot N · <device>", replacing that slot's previous upload. Down: the
+     * newest GameHub state made elsewhere goes into slot 9 — only if slot 9 is empty or was filled by sync.
+     * Screenshots travel with them (RetroArch's "<state>.png" thumbnails).
+     */
+    private suspend fun syncStates(
+        ctx: Ctx,
+        uri: String,
+        batteries: List<BatterySlot>,
+        records: MutableMap<String, StateRecord>,
+        log: MutableList<LogEntry>,
+        errors: MutableList<String>,
+        onlyRomId: Long?,
+    ) {
+        val root = tree(uri)
+        data class LocalState(val file: DocumentFile, val core: String?, val base: String, val slot: String)
+        val locals = mutableListOf<LocalState>()
+        val coreDirs = HashMap<String, DocumentFile>()
+        fun scan(dir: DocumentFile, core: String?) = dir.listFiles().forEach { f ->
+            val m = STATE_FILE.matchEntire(f.name.orEmpty()) ?: return@forEach
+            if (f.isFile) locals += LocalState(f, core, m.groupValues[1], m.groupValues[2])
+        }
+        root.listFiles().forEach { f -> if (f.isDirectory) { coreDirs[f.name.orEmpty()] = f; scan(f, f.name) } }
+        scan(root, null)
+
+        // Pair state files with games: by the battery saves already matched, else by file name.
+        val byBase = batteries.associateBy { it.fileName.substringBeforeLast('.').lowercase() }
+        val unmatched = locals.map { it.base }.distinct().filter { it.lowercase() !in byBase }
+        val matches = if (unmatched.isEmpty()) emptyMap() else ctx.api.matchSaves(unmatched)
+        data class Game(val romId: Long, val title: String, val base: String, val core: String?)
+        val games = LinkedHashMap<Long, Game>()
+        locals.forEach { l ->
+            val b = byBase[l.base.lowercase()]
+            val pick = b?.let { Game(it.romId, it.title, l.base, l.core) } ?: run {
+                val c = matches[l.base].orEmpty()
+                val systems = l.core?.let { RetroArchCores.systemsFor(it) }.orEmpty()
+                (c.firstOrNull { it.platform in systems } ?: c.singleOrNull())?.let { Game(it.id, it.title.ifBlank { l.base }, l.base, l.core) }
+            }
+            if (pick != null) games.putIfAbsent(pick.romId, pick)
+        }
+        // Games played in RetroArch here (they have a battery save) can receive GameHub's states too.
+        val sortedByCore = coreDirs.isNotEmpty()
+        batteries.forEach { b ->
+            games.putIfAbsent(b.romId, Game(b.romId, b.title, b.fileName.substringBeforeLast('.'), if (sortedByCore) b.core else null))
+        }
+
+        for (g in games.values) {
+            if (onlyRomId != null && g.romId != onlyRomId) continue
+            runCatching {
+                val rec = records[g.romId.toString()] ?: StateRecord()
+                val remote = ctx.api.states(g.romId)
+                if (remote.any { it.sha256 == null }) error("GameHub is too old for save state sync (needs 0.1.9)")
+                val dirFn: () -> DocumentFile = {
+                    if (g.core == null) root else coreDirs[g.core] ?: root.findFile(g.core) ?: root.createDirectory(g.core) ?: error("Couldn't create ${g.core}")
+                }
+                val mine = locals.filter { it.base.equals(g.base, ignoreCase = true) && (it.core ?: "") == (g.core ?: "") }
+                val localBySlot = mine.associate { l ->
+                    l.slot to (l to readState(l.file))
+                }
+                val uploaded = rec.uploaded.toMutableMap()
+                var downloaded = rec.downloaded
+                val retired = rec.retired.toMutableList()
+                val deletedIds = HashSet<Long>()
+                val remoteHashes = remote.mapNotNull { it.sha256 }.toSet()
+
+                // Up: new RetroArch states (not the one sync put in the download slot).
+                for ((slot, pair) in localBySlot) {
+                    val (l, raw) = pair
+                    val hash = sha256(raw)
+                    if (slot == DOWNLOAD_SLOT && hash == downloaded) continue
+                    if (hash in remoteHashes) { remote.firstOrNull { it.sha256 == hash }?.let { uploaded[slot] = UploadedState(hash, it.id) }; continue }
+                    if (uploaded[slot]?.sha256 == hash) continue // uploaded before and since removed on GameHub: leave it removed
+                    val shot = l.file.parentFile?.findFile("${l.file.name}.png")?.let { f -> app.contentResolver.openInputStream(f.uri)?.use { it.readBytes() } }
+                    val label = "RetroArch ${if (slot == "auto") "auto" else "slot ${slot.ifEmpty { "0" }}"} - $deviceName".take(64)
+                    val newId = ctx.api.uploadState(g.romId, raw, shot, label)
+                    uploaded[slot]?.let { old ->
+                        retired += old.sha256
+                        if (remote.any { it.id == old.remoteId }) { ctx.api.deleteState(old.remoteId); deletedIds += old.remoteId }
+                    }
+                    uploaded[slot] = UploadedState(hash, newId)
+                    log += LogEntry("state:${g.romId}:$slot", g.title, "RetroArch states", Action.UPLOADED, label)
+                }
+
+                // Down: the newest state made elsewhere, into the download slot.
+                val ours = uploaded.values.map { it.sha256 }.toSet() + retired
+                val localHashes = localBySlot.values.map { sha256(it.second) }.toSet()
+                // The newest state made elsewhere; if this device already has it (any slot), there's nothing to do.
+                val newest = remote.filter { it.id !in deletedIds && it.sha256 !in ours }.maxByOrNull { it.createdAt }
+                if (newest != null && newest.sha256 != downloaded && newest.sha256 !in localHashes) {
+                    val current = localBySlot[DOWNLOAD_SLOT]?.second?.let { sha256(it) }
+                    if (current == null || current == downloaded) {
+                        val raw = ctx.api.downloadState(newest.id)
+                        val dir = dirFn()
+                        val name = "${g.base}.state$DOWNLOAD_SLOT"
+                        writeFile(dir, name, raw)
+                        if (newest.hasScreenshot != 0) ctx.api.downloadStateScreenshot(newest.id)?.let { writeFile(dir, "$name.png", it) }
+                        downloaded = newest.sha256
+                        log += LogEntry("state:${g.romId}:$DOWNLOAD_SLOT", g.title, "RetroArch states", Action.DOWNLOADED, "in slot $DOWNLOAD_SLOT")
+                    }
+                }
+                records[g.romId.toString()] = StateRecord(uploaded, downloaded, retired.distinct().takeLast(50))
+            }.onFailure { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                errors += "${g.title} (save states): ${e.message ?: e}"
+                log += LogEntry("state:${g.romId}", g.title, "RetroArch states", Action.ERROR, e.message)
+            }
+        }
+    }
+
+    /** A RetroArch state as raw libretro data (RetroArch compresses them as RZIP when that's enabled). */
+    private fun readState(f: DocumentFile): ByteArray {
+        if (f.length() > 64L * 1024 * 1024) error("${f.name} is too large")
+        val bytes = app.contentResolver.openInputStream(f.uri)?.use { it.readBytes() } ?: error("Couldn't read ${f.name}")
+        return unrzip(bytes)
+    }
+
+    private fun writeFile(dir: DocumentFile, name: String, bytes: ByteArray) {
+        val f = dir.findFile(name) ?: dir.createFile("application/octet-stream", name) ?: error("Couldn't create $name")
+        app.contentResolver.openOutputStream(f.uri, "wt")?.use { it.write(bytes) } ?: error("Couldn't write $name")
+    }
+
+    /**
      * Some PSP games install hundreds of MB of game data into SAVEDATA (e.g. "ULJS00266INST" next to
      * the real save "ULJS00266SYSTEM"). That isn't save data, so it's never synced.
      */
@@ -570,6 +725,43 @@ class SaveSync(private val app: GameHubApp) {
 
     companion object {
         private val PSP_ID = Regex("[A-Z]{4}\\d{5}")
+        /** "<ROM name>.state", ".state1"…".state9", ".state.auto" — not thumbnails (".png"). */
+        private val STATE_FILE = Regex("(.+)\\.state(\\d|\\.auto)?", RegexOption.IGNORE_CASE)
+        /** RetroArch slot that receives the newest GameHub state made elsewhere. */
+        const val DOWNLOAD_SLOT = "9"
+
+        /** Decodes RetroArch's RZIP ("#RZIPv\u0001#", chunked zlib); anything else is returned as-is. */
+        fun unrzip(bytes: ByteArray): ByteArray {
+            val magic = "#RZIPv".toByteArray()
+            if (bytes.size < 20 || !bytes.copyOfRange(0, 6).contentEquals(magic) || bytes[7] != '#'.code.toByte()) return bytes
+            val buf = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            buf.position(8)
+            buf.int // chunk size
+            val total = buf.long
+            if (total < 0 || total > 256L * 1024 * 1024) error("Unexpected state size")
+            val out = ByteArrayOutputStream(total.toInt())
+            val inflater = java.util.zip.Inflater()
+            val chunk = ByteArray(64 * 1024)
+            try {
+                while (buf.remaining() >= 4) {
+                    val len = buf.int
+                    if (len <= 0 || len > buf.remaining()) error("Corrupt RZIP state")
+                    inflater.reset()
+                    inflater.setInput(bytes, buf.position(), len)
+                    while (!inflater.finished()) {
+                        val n = inflater.inflate(chunk)
+                        if (n == 0 && (inflater.needsInput() || inflater.needsDictionary())) break
+                        out.write(chunk, 0, n)
+                    }
+                    buf.position(buf.position() + len)
+                }
+            } finally {
+                inflater.end()
+            }
+            if (out.size().toLong() != total) error("Corrupt RZIP state")
+            return out.toByteArray()
+        }
+
         /** Largest device save synced (a whole Vita/3DS save folder is a few MB at most). */
         private const val MAX_DEVICE_SAVE = 128L * 1024 * 1024
         private val VITA_ID = Regex("PCS[A-Z]\\d{5}")

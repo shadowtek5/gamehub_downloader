@@ -137,7 +137,7 @@ fun SettingsScreen(
                     when {
                         sync.running -> sync.progress
                         sync.report != null -> sync.report!!.summary()
-                        else -> "Back up and sync RetroArch, PPSSPP, Vita3K, Azahar and DS saves with GameHub"
+                        else -> "Back up and sync RetroArch saves and states, PPSSPP, Vita3K, Azahar and DS saves with GameHub"
                     },
                 ) { DeckButton("Open", onOpenSaveSync) }
             }

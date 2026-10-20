@@ -164,6 +164,23 @@ private data class SaveMatchResponse(val matches: Map<String, List<SaveMatch>> =
 @Serializable
 private data class SaveMatchRequest(val names: List<String>, val platforms: List<String> = emptyList())
 
+/** A save state stored on GameHub (made by the browser player or uploaded by a device). */
+@Serializable
+data class RemoteState(
+    val id: Long,
+    @SerialName("size_bytes") val size: Long = 0,
+    @SerialName("has_screenshot") val hasScreenshot: Int = 0,
+    @SerialName("created_at") val createdAt: String = "",
+    val label: String? = null,
+    val sha256: String? = null,
+)
+
+@Serializable
+private data class RemoteStates(val states: List<RemoteState> = emptyList())
+
+@Serializable
+private data class StateCreated(val id: Long, val sha256: String? = null)
+
 @Serializable
 data class SaveVersion(val sha256: String? = null, val updatedAt: String? = null, val romId: Long? = null)
 
@@ -271,6 +288,29 @@ class GameHubApi(private val client: OkHttpClient, val connection: Connection) {
         device?.let { b.header("X-Save-Device", java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")) }
         romId?.let { b.header("X-Save-Rom-Id", it.toString()) }
         return upload(b, zip, "application/zip", expected)
+    }
+
+    // ---- Save states ----
+
+    suspend fun states(romId: Long): List<RemoteState> = get<RemoteStates>(url("api/roms/$romId/states")).states
+
+    suspend fun downloadState(id: Long): ByteArray = downloadBytes(url("api/states/$id"))
+
+    suspend fun downloadStateScreenshot(id: Long): ByteArray? =
+        runCatching { downloadBytes(url("api/states/$id").newBuilder().addQueryParameter("type", "screenshot").build()) }.getOrNull()
+
+    /** Uploads a save state (raw, uncompressed) with an optional screenshot; returns the new state's id. */
+    suspend fun uploadState(romId: Long, state: ByteArray, screenshot: ByteArray?, label: String): Long = withContext(Dispatchers.IO) {
+        val body = okhttp3.MultipartBody.Builder().setType(okhttp3.MultipartBody.FORM)
+            .addFormDataPart("state", "state.state", state.toRequestBody("application/octet-stream".toMediaType()))
+            .addFormDataPart("label", label)
+            .apply { screenshot?.let { addFormDataPart("screenshot", "screenshot.png", it.toRequestBody("image/png".toMediaType())) } }
+            .build()
+        json.decodeFromString<StateCreated>(fetch(authed(url("api/roms/$romId/states")).post(body).build())).id
+    }
+
+    suspend fun deleteState(id: Long) = withContext(Dispatchers.IO) {
+        client.newCall(authed(url("api/states/$id")).delete().build()).execute().close()
     }
 
     private suspend fun downloadBytes(u: HttpUrl): ByteArray = withContext(Dispatchers.IO) {

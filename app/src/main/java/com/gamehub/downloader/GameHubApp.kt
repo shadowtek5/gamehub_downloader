@@ -46,6 +46,7 @@ class GameHubApp : Application(), SingletonImageLoader.Factory {
         downloads = DownloadManager(this)
         http = GameHubApi.defaultClient()
         DownloadNotifications.createChannels(this)
+        com.gamehub.downloader.data.SaveSyncNotifications.createChannels(this)
         Gamepad.init(this, appScope)
         installed = InstalledIndex(this, settings)
         vita3k = Vita3k(this, settings)

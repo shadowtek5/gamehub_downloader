@@ -62,6 +62,13 @@ fun SaveSyncScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var message by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { app.saveSync.loadLastReport() }
+    // Confirmations ("Kept GameHub's save for …") and folder hints fade out on their own.
+    LaunchedEffect(message) {
+        if (message != null) {
+            kotlinx.coroutines.delay(6_000)
+            message = null
+        }
+    }
 
     val s = settings?.saveSync ?: SaveSyncSettings()
     val connection = settings?.activeConnection
@@ -81,6 +88,15 @@ fun SaveSyncScreen(onBack: () -> Unit) {
             message = "That's RetroArch's save states folder. Pick the \"saves\" folder next to it (Internal storage › RetroArch › saves)."
         } else {
             scope.launch { app.settings.updateSaveSync { it.copy(retroarchSavesUri = uri.toString()) } }
+            message = null
+        }
+    }
+    val pickStates = rememberFolderPicker { uri ->
+        val dir = DocumentFile.fromTreeUri(context, uri)
+        if (dir?.name.equals("saves", ignoreCase = true)) {
+            message = "That's RetroArch's saves folder. Pick the \"states\" folder next to it (Internal storage › RetroArch › states)."
+        } else {
+            scope.launch { app.settings.updateSaveSync { it.copy(retroarchStatesUri = uri.toString()) } }
             message = null
         }
     }
@@ -178,6 +194,18 @@ fun SaveSyncScreen(onBack: () -> Unit) {
                     s.retroarchSavesUri,
                     onPick = { pickRetroarch(null) },
                     onClear = { scope.launch { app.settings.updateSaveSync { it.copy(retroarchSavesUri = null) } } },
+                )
+            }
+            item {
+                SourceCard(
+                    "RetroArch save states",
+                    "Your RetroArch slots appear in GameHub's save states (\"RetroArch slot N - device\"), and the newest state from GameHub " +
+                        "or another device goes into slot 9 (never over a state you saved there yourself). Pick RetroArch's states folder " +
+                        "(Internal storage › RetroArch › states). For screenshots, turn on Save State Thumbnails in RetroArch › Settings › Saving. " +
+                        "States only load in the same emulator core, so a few systems may not carry over.",
+                    s.retroarchStatesUri,
+                    onPick = { pickStates(null) },
+                    onClear = { scope.launch { app.settings.updateSaveSync { it.copy(retroarchStatesUri = null) } } },
                 )
             }
             item {

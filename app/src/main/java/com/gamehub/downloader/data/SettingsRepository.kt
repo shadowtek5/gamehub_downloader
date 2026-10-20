@@ -55,6 +55,8 @@ data class FolderMapping(
 data class SaveSyncSettings(
     /** RetroArch's "saves" folder (contains <core>/<ROM name>.srm). */
     val retroarchSavesUri: String? = null,
+    /** RetroArch's "states" folder (contains <core>/<ROM name>.state, .state1…). */
+    val retroarchStatesUri: String? = null,
     /** PPSSPP's "PSP" folder (contains SAVEDATA). */
     val ppssppUri: String? = null,
     /** Azahar's user folder (contains sdmc). */

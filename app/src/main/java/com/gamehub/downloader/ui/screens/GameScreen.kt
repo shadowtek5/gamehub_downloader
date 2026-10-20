@@ -1,5 +1,9 @@
 package com.gamehub.downloader.ui.screens
 
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.runtime.rememberCoroutineScope
+import com.gamehub.downloader.GameHubApp
+import kotlinx.coroutines.launch
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -529,6 +533,9 @@ private fun Details(
             }
         }
 
+        // ---- Saves (Settings › Save sync) ----
+        if (installedFile != null || state.vita3kInstalled) GameSavesCard(rom.id)
+
         // ---- About ----
         rom.description?.takeIf { it.isNotBlank() }?.let { desc ->
             var expanded by remember { mutableStateOf(false) }
@@ -615,6 +622,44 @@ private fun Details(
  * A titled content card that can take controller focus, so the D-pad can scroll down through
  * text-only sections. [onClick] is optional (e.g. expand/collapse).
  */
+/** Sync just this game's saves (whichever emulators in Settings › Save sync have them). */
+@Composable
+private fun GameSavesCard(romId: Long) {
+    val app = LocalContext.current.applicationContext as GameHubApp
+    val settings by app.settings.settings.collectAsState(initial = null)
+    val status by app.saveSync.status.collectAsState()
+    val scope = rememberCoroutineScope()
+    var result by remember { mutableStateOf<String?>(null) }
+    val configured = settings?.let { app.saveSync.anySourceConfigured(it) } == true
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Sync, null, tint = if (configured) DeckColors.Accent else DeckColors.TextDim)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Saves", color = DeckColors.TextDim, fontSize = 12.sp)
+                Text(
+                    when {
+                        !configured -> "Set up save sync in Settings › Save sync"
+                        status.running -> status.progress
+                        result != null -> result!!
+                        else -> "Sync this game's saves with GameHub"
+                    },
+                    fontSize = 14.sp,
+                )
+            }
+        }
+        if (configured) DeckButton("Sync saves", {
+            scope.launch {
+                val r = app.saveSync.syncAll(onlyRomId = romId)
+                result = if (r.checked == 0) "No saves for this game yet (play it once, or sync after GameHub links it)" else r.summary()
+            }
+        }, icon = Icons.Default.Sync, enabled = !status.running)
+    }
+}
+
 @Composable
 private fun Panel(title: String, onClick: () -> Unit = {}, content: @Composable () -> Unit) {
     DeckFocusable(onClick = onClick, modifier = Modifier.fillMaxWidth(), focusedScale = 1.0f) {

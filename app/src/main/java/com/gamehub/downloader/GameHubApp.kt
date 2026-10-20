@@ -9,6 +9,7 @@ import com.gamehub.downloader.api.GameHubApi
 import com.gamehub.downloader.data.Connection
 import com.gamehub.downloader.data.DownloadHistory
 import com.gamehub.downloader.data.InstalledIndex
+import com.gamehub.downloader.data.SaveSync
 import com.gamehub.downloader.data.SettingsRepository
 import com.gamehub.downloader.data.Vita3k
 import com.gamehub.downloader.download.DownloadManager
@@ -32,6 +33,7 @@ class GameHubApp : Application(), SingletonImageLoader.Factory {
     lateinit var http: OkHttpClient private set
     lateinit var installed: InstalledIndex private set
     lateinit var vita3k: Vita3k private set
+    lateinit var saveSync: SaveSync private set
 
     /** Connections cached for the image interceptor, which can't suspend. */
     @Volatile private var connections: List<Connection> = emptyList()
@@ -47,6 +49,7 @@ class GameHubApp : Application(), SingletonImageLoader.Factory {
         Gamepad.init(this, appScope)
         installed = InstalledIndex(this, settings)
         vita3k = Vita3k(this, settings)
+        saveSync = SaveSync(this)
         // Rescan Vita3K's installed games whenever its folder is set or changed.
         appScope.launch {
             settings.settings.map { it.vita3kFolderUri }.distinctUntilChanged().collect { vita3k.refresh() }

@@ -40,6 +40,7 @@ import com.gamehub.downloader.ui.screens.LibraryScreen
 import com.gamehub.downloader.ui.screens.SettingsScreen
 import com.gamehub.downloader.ui.screens.SystemsScreen
 import com.gamehub.downloader.ui.screens.Vita3kScreen
+import com.gamehub.downloader.ui.screens.SaveSyncScreen
 import com.gamehub.downloader.ui.theme.DeckColors
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -85,6 +86,7 @@ object Routes {
     const val FOLDERS = "folders?conn={conn}"
     const val CONTROLS = "controls"
     const val VITA3K = "vita3k"
+    const val SAVE_SYNC = "savesync"
     const val SYSTEMS = "systems?conn={conn}"
     fun systems(connId: String? = null) = if (connId == null) "systems" else "systems?conn=$connId"
 
@@ -141,6 +143,7 @@ fun AppRoot(openDownloads: MutableStateFlow<Boolean>) {
                     onOpenControls = { nav.navigate(Routes.CONTROLS) },
                     onOpenSystems = { nav.navigate(Routes.systems(it)) },
                     onOpenVita3k = { nav.navigate(Routes.VITA3K) },
+                    onOpenSaveSync = { nav.navigate(Routes.SAVE_SYNC) },
                 )
             }
             composable(
@@ -157,6 +160,9 @@ fun AppRoot(openDownloads: MutableStateFlow<Boolean>) {
                 arguments = listOf(navArgument("conn") { type = NavType.StringType; nullable = true; defaultValue = null }),
             ) { entry ->
                 SystemsScreen(initialConnectionId = entry.arguments?.getString("conn"), onBack = { nav.popBackStack() })
+            }
+            composable(Routes.SAVE_SYNC) {
+                SaveSyncScreen(onBack = { nav.popBackStack() })
             }
             composable(Routes.VITA3K) {
                 Vita3kScreen(onBack = { nav.popBackStack() })

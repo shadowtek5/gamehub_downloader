@@ -17,6 +17,11 @@ A controller-first Android app (styled like the Steam Deck UI) for browsing a [G
   - Encrypted dumps need their license: a `sce_sys/package/work.bin` in the zip is copied to `ux0/license`. Without one, the install is refused and an existing install is left alone.
   - *Folders › Sync with Vita3K* installs leftover zips and creates `.dpt` files for games already in Vita3K.
   - Delete removes the `.dpt` and the Vita3K install and keeps save data. Games can be played in Vita3K from their page.
+- **Save sync** (*Settings › Save sync*, needs GameHub 0.1.8+). Pick each emulator's save folder once; saves then sync when the app opens (at most every 10 minutes), from **Sync now**, or per game from its page.
+  - **RetroArch:** `saves/<core>/<ROM name>.srm` ↔ GameHub's battery save for that game, the same slot the browser player uses, so you can continue a game in either place. Games are paired by ROM file name.
+  - **PPSSPP, Vita3K, Azahar, DS:** each game's save folder (PSP `SAVEDATA/<game id>*`, Vita `ux0/user/00/savedata/<title id>`, 3DS `title/…/data`, DS `<ROM>.sav`) is uploaded as a GameHub *device save* and restored on other devices.
+  - The side that changed since the last sync wins. If both changed, the save is listed under **Needs attention** and you pick which copy to keep. Uploads are conditional (`If-Match`), so another device's newer save is never overwritten, and local saves are backed up (last 5 per game, in app storage) before being replaced.
+  - DuckStation, AetherSX2 and Dolphin keep saves in their private `Android/data` folder, which other apps can't read.
 - **Adaptive layout.** Landscape shows a systems rail plus a cover grid. Portrait, and narrow screens like the Thor's second display, show system tabs plus a grid.
 
 ## Controls
@@ -65,6 +70,10 @@ On the Thor, enable *Developer options › USB debugging*, then plug it in.
 | `GET /api/roms/{id}/discs` | Multi-disc game as a single zip (no resume) |
 | `GET /api/media/...?w=` | Box art thumbnails |
 | `POST /api/pair/start`, `POST /api/pair/{id}/poll` | QR device pairing (requests a `viewer`-scope token) |
+| `GET /api/saves` | Every save of the signed-in user with its SHA-256 and updated time |
+| `POST /api/saves/match` | Pairs save file names (`<ROM name>.srm`) with library games |
+| `GET/POST /api/roms/{id}/save` | Battery save download / conditional upload (`If-Match`, `If-None-Match: *`) |
+| `GET/POST /api/device-saves/{platform}/{key}` | Device save (zip) download / conditional upload |
 
 Every request sends `Authorization: Bearer ghk_…`.
 

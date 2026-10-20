@@ -133,7 +133,44 @@ data class PairPoll(val status: String? = null, val token: String? = null, val s
 @Serializable
 private data class ErrorBody(val error: String? = null)
 
+// ---- Save sync ----
+
+/** A battery (.srm) save on the server: the same slot GameHub's browser player uses. */
+@Serializable
+data class RemoteBatterySave(val romId: Long, val sha256: String, val size: Long = 0, val updatedAt: String = "")
+
+/** An emulator save folder synced from a device, keyed by system + the save's own id. */
+@Serializable
+data class RemoteDeviceSave(
+    val platform: String,
+    val key: String,
+    val romId: Long? = null,
+    val title: String? = null,
+    val device: String? = null,
+    val sha256: String,
+    val size: Long = 0,
+    val updatedAt: String = "",
+)
+
+@Serializable
+data class RemoteSaves(val battery: List<RemoteBatterySave> = emptyList(), val device: List<RemoteDeviceSave> = emptyList())
+
+@Serializable
+data class SaveMatch(val id: Long, val platform: String, val title: String = "")
+
+@Serializable
+private data class SaveMatchResponse(val matches: Map<String, List<SaveMatch>> = emptyMap())
+
+@Serializable
+private data class SaveMatchRequest(val names: List<String>, val platforms: List<String> = emptyList())
+
+@Serializable
+data class SaveVersion(val sha256: String? = null, val updatedAt: String? = null, val romId: Long? = null)
+
 class ApiException(val code: Int, message: String) : IOException(message)
+
+/** A conditional save upload was refused because the server copy changed (HTTP 412). */
+class SaveConflictException(message: String) : IOException(message)
 
 /** Thin client for one GameHub server. */
 class GameHubApi(private val client: OkHttpClient, val connection: Connection) {
@@ -191,6 +228,69 @@ class GameHubApi(private val client: OkHttpClient, val connection: Connection) {
 
     fun fileUrl(id: Long): HttpUrl = url("api/roms/$id/file").newBuilder().addQueryParameter("download", "1").build()
     fun discsZipUrl(id: Long): HttpUrl = url("api/roms/$id/discs")
+
+    // ---- Save sync ----
+
+    suspend fun saves(): RemoteSaves = get(url("api/saves"))
+
+    /** Pairs save file base names (e.g. RetroArch "<ROM name>.srm") with library games. */
+    suspend fun matchSaves(names: List<String>, platforms: List<String> = emptyList()): Map<String, List<SaveMatch>> =
+        withContext(Dispatchers.IO) {
+            if (names.isEmpty()) return@withContext emptyMap()
+            val body = json.encodeToString(SaveMatchRequest.serializer(), SaveMatchRequest(names, platforms))
+            val req = authed(url("api/saves/match")).post(body.toRequestBody("application/json".toMediaType())).build()
+            json.decodeFromString<SaveMatchResponse>(fetch(req)).matches
+        }
+
+    private fun deviceSaveUrl(platform: String, key: String): HttpUrl =
+        url("api/device-saves/").newBuilder().addPathSegment(platform).addPathSegment(key).build()
+
+    suspend fun downloadBatterySave(romId: Long): ByteArray = downloadBytes(url("api/roms/$romId/save"))
+
+    suspend fun downloadDeviceSave(platform: String, key: String): ByteArray = downloadBytes(deviceSaveUrl(platform, key))
+
+    /**
+     * Uploads a battery save only if the server copy is still [expected] (null = there must be
+     * none). Throws [SaveConflictException] when another device changed it in the meantime.
+     */
+    suspend fun uploadBatterySave(romId: Long, bytes: ByteArray, expected: String?): SaveVersion =
+        upload(authed(url("api/roms/$romId/save")), bytes, "application/octet-stream", expected)
+
+    suspend fun uploadDeviceSave(
+        platform: String,
+        key: String,
+        zip: ByteArray,
+        contentHash: String,
+        expected: String?,
+        title: String?,
+        romId: Long?,
+        device: String?,
+    ): SaveVersion {
+        val b = authed(deviceSaveUrl(platform, key)).header("X-Save-Sha256", contentHash)
+        title?.let { b.header("X-Save-Title", java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")) }
+        device?.let { b.header("X-Save-Device", java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")) }
+        romId?.let { b.header("X-Save-Rom-Id", it.toString()) }
+        return upload(b, zip, "application/zip", expected)
+    }
+
+    private suspend fun downloadBytes(u: HttpUrl): ByteArray = withContext(Dispatchers.IO) {
+        client.newCall(authed(u).build()).execute().use { resp ->
+            if (!resp.isSuccessful) throw ApiException(resp.code, errorMessage(resp.code, resp.body?.string().orEmpty()))
+            resp.body?.bytes() ?: ByteArray(0)
+        }
+    }
+
+    private suspend fun upload(builder: Request.Builder, bytes: ByteArray, type: String, expected: String?): SaveVersion =
+        withContext(Dispatchers.IO) {
+            if (expected == null) builder.header("If-None-Match", "*") else builder.header("If-Match", "\"$expected\"")
+            val req = builder.post(bytes.toRequestBody(type.toMediaType())).build()
+            client.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (resp.code == 412) throw SaveConflictException(errorMessage(resp.code, text))
+                if (!resp.isSuccessful) throw ApiException(resp.code, errorMessage(resp.code, text))
+                json.decodeFromString<SaveVersion>(text)
+            }
+        }
 
     companion object {
         val json = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true; explicitNulls = false }

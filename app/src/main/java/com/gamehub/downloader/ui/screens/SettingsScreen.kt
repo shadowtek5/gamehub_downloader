@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
@@ -66,6 +67,7 @@ fun SettingsScreen(
     onOpenControls: () -> Unit,
     onOpenSystems: (String?) -> Unit,
     onOpenVita3k: () -> Unit,
+    onOpenSaveSync: () -> Unit,
 ) {
     val app = LocalContext.current.applicationContext as GameHubApp
     val settings by app.settings.settings.collectAsState(initial = null)
@@ -73,6 +75,7 @@ fun SettingsScreen(
     val statuses = remember { mutableStateMapOf<String, ConnStatus>() }
 
     val connections = settings?.connections.orEmpty()
+    LaunchedEffect(Unit) { app.saveSync.loadLastReport() }
     LaunchedEffect(connections) {
         connections.forEach { c ->
             if (statuses[c.id] != null) return@forEach
@@ -125,6 +128,18 @@ fun SettingsScreen(
                     if (settings?.vita3kFolderUri == null) "Set Vita3K's folder to install PS Vita games from zips and see what's installed"
                     else "$vitaCount game${if (vitaCount == 1) "" else "s"} installed • install, play and uninstall",
                 ) { DeckButton("Open", onOpenVita3k) }
+            }
+            item {
+                val sync by app.saveSync.status.collectAsState()
+                SettingsRow(
+                    Icons.Default.Sync,
+                    "Save sync",
+                    when {
+                        sync.running -> sync.progress
+                        sync.report != null -> sync.report!!.summary()
+                        else -> "Back up and sync RetroArch, PPSSPP, Vita3K, Azahar and DS saves with GameHub"
+                    },
+                ) { DeckButton("Open", onOpenSaveSync) }
             }
 
             item { SectionTitle("Download folders", Modifier.padding(top = 14.dp)) }

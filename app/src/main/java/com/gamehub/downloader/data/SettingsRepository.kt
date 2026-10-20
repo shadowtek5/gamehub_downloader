@@ -47,6 +47,26 @@ data class FolderMapping(
     val extract: Boolean = false,
 )
 
+/**
+ * Where each emulator keeps its saves on this device (SAF tree URIs the user granted).
+ * PS Vita uses Vita3K's folder and Nintendo DS uses the DS download folder, so they only need a switch.
+ */
+@Serializable
+data class SaveSyncSettings(
+    /** RetroArch's "saves" folder (contains <core>/<ROM name>.srm). */
+    val retroarchSavesUri: String? = null,
+    /** PPSSPP's "PSP" folder (contains SAVEDATA). */
+    val ppssppUri: String? = null,
+    /** Azahar's user folder (contains sdmc). */
+    val azaharUri: String? = null,
+    val vita: Boolean = true,
+    val nds: Boolean = true,
+    /** Sync all saves when the app is opened. */
+    val syncOnOpen: Boolean = true,
+    /** RetroArch core folder learned per system from existing saves, e.g. "gba" → "mGBA". */
+    val retroarchCoreDirs: Map<String, String> = emptyMap(),
+)
+
 @Serializable
 data class AppSettings(
     val connections: List<Connection> = emptyList(),
@@ -54,6 +74,7 @@ data class AppSettings(
     val folders: List<FolderMapping> = emptyList(),
     /** Vita3K's storage folder (the one containing ux0), granted by the user. */
     val vita3kFolderUri: String? = null,
+    val saveSync: SaveSyncSettings = SaveSyncSettings(),
 ) {
     val activeConnection: Connection?
         get() = connections.firstOrNull { it.id == activeConnectionId } ?: connections.firstOrNull()
@@ -120,6 +141,8 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setVita3kFolder(treeUri: String?) = update { it.copy(vita3kFolderUri = treeUri) }
+
+    suspend fun updateSaveSync(transform: (SaveSyncSettings) -> SaveSyncSettings) = update { it.copy(saveSync = transform(it.saveSync)) }
 
     /** Show or hide systems (one, a whole maker, or a preset). */
     suspend fun setSystemsVisible(connectionId: String, slugs: Collection<String>, visible: Boolean) = updateConnection(connectionId) { c ->

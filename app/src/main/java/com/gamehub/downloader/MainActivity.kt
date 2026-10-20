@@ -19,7 +19,11 @@ import com.gamehub.downloader.ui.AppRoot
 import com.gamehub.downloader.ui.GameAction
 import com.gamehub.downloader.ui.Gamepad
 import com.gamehub.downloader.ui.theme.DeckTheme
+import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
@@ -43,6 +47,19 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             DeckTheme { AppRoot(openDownloads) }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Settings › Save sync › "Sync when the app opens" (throttled inside SaveSync).
+        val app = application as GameHubApp
+        app.appScope.launch {
+            val report = app.saveSync.autoSyncIfDue() ?: return@launch
+            if (report.uploaded + report.downloaded + report.conflicts.size + report.errors.size == 0) return@launch
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@MainActivity, "Saves: ${report.summary()}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 

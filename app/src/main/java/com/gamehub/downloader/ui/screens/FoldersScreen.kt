@@ -48,6 +48,10 @@ import androidx.compose.ui.unit.sp
 import com.gamehub.downloader.GameHubApp
 import com.gamehub.downloader.api.Platform
 import com.gamehub.downloader.data.FolderMapping
+import com.gamehub.downloader.data.InstalledIndex
+import com.gamehub.downloader.data.Storage
+import com.gamehub.downloader.download.formatBytes
+import androidx.compose.material3.LinearProgressIndicator
 import com.gamehub.downloader.data.FolderStorage
 import com.gamehub.downloader.data.SystemRules
 import com.gamehub.downloader.ui.components.DeckButton
@@ -98,6 +102,28 @@ fun FoldersScreen(initialConnectionId: String?, onBack: () -> Unit) {
     LaunchedEffect(folders, connection?.baseFolderUri) {
         val uris = folders.map { it.treeUri } + listOfNotNull(connection?.baseFolderUri)
         access = withContext(Dispatchers.IO) { uris.distinct().associateWith { FolderStorage.hasAccess(app, it) } }
+    }
+
+    // Storage: free space per drive and space used by each system's folder.
+    var sizes by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    var volumes by remember { mutableStateOf<List<Triple<String, Long, Long>>>(emptyList()) }
+    LaunchedEffect(folders, access) {
+        val usable = folders.filter { access[it.treeUri] == true }
+        volumes = withContext(Dispatchers.IO) {
+            (usable.map { it.treeUri } + listOfNotNull(connection?.baseFolderUri)).groupBy { Storage.volumeLabel(it) }
+                .mapNotNull { (label, uris) ->
+                    val u = uris.first()
+                    val free = Storage.freeBytes(u) ?: return@mapNotNull null
+                    val total = Storage.totalBytes(u) ?: return@mapNotNull null
+                    Triple(label.replaceFirstChar { it.uppercase() }, free, total)
+                }
+        }
+        usable.forEach { m ->
+            val size = withContext(Dispatchers.IO) {
+                runCatching { InstalledIndex.findDir(app, m)?.let { Storage.folderSize(app, it) } }.getOrNull()
+            }
+            if (size != null) sizes = sizes + (m.systemKey to size)
+        }
     }
 
     var pickingFor by remember { mutableStateOf<Platform?>(null) }
@@ -170,6 +196,34 @@ fun FoldersScreen(initialConnectionId: String?, onBack: () -> Unit) {
                 }
             }
 
+            // ---- Storage ----
+            if (volumes.isNotEmpty()) {
+                item { SectionTitle("Storage", Modifier.padding(top = 6.dp)) }
+                items(volumes, key = { it.first }) { (label, free, total) ->
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(label, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            Text("${formatBytes(free)} free of ${formatBytes(total)}", color = DeckColors.TextDim, fontSize = 13.sp)
+                        }
+                        LinearProgressIndicator(
+                            progress = { if (total > 0) (total - free).toFloat() / total else 0f },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = if (free < total / 20) DeckColors.Warning else DeckColors.Accent,
+                            trackColor = DeckColors.SurfaceHigh,
+                        )
+                    }
+                }
+                if (sizes.isNotEmpty()) item {
+                    Text(
+                        "Your game folders use ${formatBytes(sizes.values.sum())} in total.",
+                        color = DeckColors.TextDim, fontSize = 13.sp,
+                    )
+                }
+            }
+
             // ---- Base folder ----
             item { SectionTitle("ROMs base folder", Modifier.padding(top = 6.dp)) }
             item {
@@ -234,6 +288,7 @@ fun FoldersScreen(initialConnectionId: String?, onBack: () -> Unit) {
                         onExtract = { on -> scope.launch { app.settings.setExtract(connection.id, p.slug, on) } },
                         onCreateAllLaunchFiles = { mapping?.let { syncVita(it) } },
                         launcherStatus = bulkStatus[p.slug],
+                        usedBytes = sizes[p.slug],
                         vita3kFolderSet = settings?.vita3kFolderUri != null,
                     )
                 }
@@ -267,6 +322,7 @@ private fun SystemFolderRow(
     onCreateAllLaunchFiles: () -> Unit,
     launcherStatus: String?,
     vita3kFolderSet: Boolean,
+    usedBytes: Long? = null,
 ) {
     val info: @Composable (Modifier) -> Unit = { m ->
         Row(m, verticalAlignment = Alignment.CenterVertically) {
@@ -282,7 +338,7 @@ private fun SystemFolderRow(
                     when {
                         mapping == null -> "Not set — you'll be asked on first download"
                         !ok -> "${FolderStorage.describe(mapping)} (access lost — choose again)"
-                        else -> FolderStorage.describe(mapping)
+                        else -> FolderStorage.describe(mapping) + (usedBytes?.let { " · ${formatBytes(it)}" } ?: "")
                     },
                     color = if (mapping != null && !ok) DeckColors.Warning else DeckColors.TextDim,
                     fontSize = 12.sp,

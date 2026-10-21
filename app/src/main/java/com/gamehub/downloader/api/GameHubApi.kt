@@ -96,6 +96,10 @@ data class RomDetail(
     @SerialName("dat_status") val datStatus: String? = null,
     val hltb: String? = null,
     @SerialName("igdb_related") val igdbRelated: String? = null,
+    /** The signed-in user's own data for this game. */
+    val favorite: Int? = null,
+    @SerialName("playtime_seconds") val playtimeSeconds: Long? = null,
+    @SerialName("last_played_at") val lastPlayedAt: String? = null,
 ) {
     val isArchive: Boolean
         get() = filename?.substringAfterLast('.', "")?.lowercase() in setOf("zip", "7z")
@@ -184,6 +188,89 @@ private data class StateCreated(val id: Long, val sha256: String? = null)
 @Serializable
 data class SaveVersion(val sha256: String? = null, val updatedAt: String? = null, val romId: Long? = null)
 
+// ---- Collections ----
+
+@Serializable
+data class CollectionInfo(
+    val id: Long,
+    val name: String,
+    val description: String? = null,
+    @SerialName("is_smart") val isSmart: Int = 0,
+    @SerialName("item_count") val itemCount: Int = 0,
+)
+
+@Serializable
+private data class CollectionsResponse(val collections: List<CollectionInfo> = emptyList())
+
+@Serializable
+private data class FavoriteResponse(val favorite: Boolean = false)
+
+// ---- Firmware / BIOS ----
+
+/** One BIOS file a system's emulator looks for, and whether GameHub has it. */
+@Serializable
+data class BiosFile(
+    /** Exact name (may include sub-folders) the libretro core looks for in its system folder. */
+    val file: String,
+    val md5: String? = null,
+    val size: Long = 0,
+    val region: String? = null,
+    val description: String? = null,
+    val have: Boolean = false,
+    val verified: Boolean = false,
+    val rowId: Long? = null,
+)
+
+/** A file uploaded to GameHub for a system that isn't in the BIOS list (kept as-is). */
+@Serializable
+data class FirmwareExtra(
+    val id: Long,
+    val filename: String,
+    @SerialName("size_bytes") val size: Long = 0,
+)
+
+@Serializable
+data class BiosSystem(
+    val slug: String,
+    val name: String,
+    val required: Boolean = false,
+    val files: List<BiosFile> = emptyList(),
+    val extras: List<FirmwareExtra> = emptyList(),
+)
+
+@Serializable
+private data class BiosResponse(val systems: List<BiosSystem> = emptyList())
+
+// ---- Android emulators (GameHub 0.1.11+, from Cocoon FE's emulator list) ----
+
+/** One emulator entry ("player") for a system, with its Daijishou-format launch line. */
+@Serializable
+data class RemotePlayer(
+    val id: String,
+    val name: String,
+    @SerialName("package") val packageName: String,
+    val kind: String = "standalone",
+    val core: String? = null,
+    val amStartArguments: String,
+    val acceptedFilenameRegex: String? = null,
+)
+
+/** Where a standalone emulator reads BIOS files for some systems. */
+@Serializable
+data class RemoteBiosTarget(
+    val id: String,
+    val name: String,
+    val packages: List<String> = emptyList(),
+    val platforms: List<String> = emptyList(),
+    val where: String = "",
+)
+
+@Serializable
+data class EmulatorCatalog(
+    val platforms: Map<String, List<RemotePlayer>> = emptyMap(),
+    val bios: List<RemoteBiosTarget> = emptyList(),
+)
+
 class ApiException(val code: Int, message: String) : IOException(message)
 
 /** A conditional save upload was refused because the server copy changed (HTTP 412). */
@@ -231,14 +318,76 @@ class GameHubApi(private val client: OkHttpClient, val connection: Connection) {
     suspend fun platforms(): List<Platform> =
         get<PlatformsResponse>(url("api/platforms")).platforms.filter { !it.hidden && it.games > 0 }
 
-    suspend fun library(platform: String?, query: String?, offset: Int, limit: Int = 120, sort: String = "name"): LibraryPage {
+    /**
+     * One page of the library. [favorites] limits it to the user's favorites and [collection]
+     * to one collection (both work with the platform filter and search).
+     */
+    suspend fun library(
+        platform: String?,
+        query: String?,
+        offset: Int,
+        limit: Int = 120,
+        sort: String = "name",
+        favorites: Boolean = false,
+        collection: Long? = null,
+    ): LibraryPage {
         val u = url("api/library").newBuilder()
             .addQueryParameter("offset", offset.toString())
             .addQueryParameter("limit", limit.toString())
             .addQueryParameter("sort", sort)
         if (!platform.isNullOrBlank()) u.addQueryParameter("platform", platform)
         if (!query.isNullOrBlank()) u.addQueryParameter("q", query.trim())
+        if (favorites) u.addQueryParameter("tab", "favorites")
+        collection?.let { u.addQueryParameter("collection", it.toString()) }
         return get(u.build())
+    }
+
+    suspend fun collections(): List<CollectionInfo> = get<CollectionsResponse>(url("api/collections")).collections
+
+    /** Sets (or clears) a favorite; returns the new state. */
+    suspend fun setFavorite(romId: Long, favorite: Boolean): Boolean = withContext(Dispatchers.IO) {
+        val body = """{"favorite":$favorite}""".toRequestBody("application/json".toMediaType())
+        json.decodeFromString<FavoriteResponse>(fetch(authed(url("api/roms/$romId/favorite")).post(body).build())).favorite
+    }
+
+    /** Every system's Android emulators, or null on servers before 0.1.11 (no catalog). */
+    suspend fun emulators(): EmulatorCatalog? = try {
+        get<EmulatorCatalog>(url("api/emulators"))
+    } catch (e: ApiException) {
+        if (e.code == 404) null else throw e
+    }
+
+    // ---- Firmware / BIOS ----
+
+    suspend fun bios(): List<BiosSystem> = get<BiosResponse>(url("api/firmware")).systems
+
+    fun firmwareUrl(rowId: Long): HttpUrl = url("api/firmware/$rowId")
+
+    // ---- Playtime (games launched in an emulator on this device) ----
+
+    /** Marks the game as being played now (also adds a minute, like GameHub's own player). */
+    suspend fun startPlaying(romId: Long) = postEmpty(url("api/roms/$romId/heartbeat"))
+
+    suspend fun stopPlaying(romId: Long) = postEmpty(url("api/roms/$romId/stop-playing"))
+
+    /**
+     * Adds a finished session's time. Servers before 0.1.11 don't have the endpoint, so it
+     * falls back to one heartbeat per minute (each adds 60 seconds).
+     */
+    suspend fun addPlaytime(romId: Long, seconds: Long) = withContext(Dispatchers.IO) {
+        if (seconds <= 0) return@withContext
+        val body = """{"seconds":$seconds}""".toRequestBody("application/json".toMediaType())
+        try {
+            fetch(authed(url("api/roms/$romId/playtime")).post(body).build())
+        } catch (e: ApiException) {
+            if (e.code != 404 && e.code != 405) throw e
+            repeat(((seconds + 30) / 60).toInt().coerceAtMost(12 * 60)) { postEmpty(url("api/roms/$romId/heartbeat")) }
+        }
+    }
+
+    private suspend fun postEmpty(u: HttpUrl) = withContext(Dispatchers.IO) {
+        fetch(authed(u).post(ByteArray(0).toRequestBody(null)).build())
+        Unit
     }
 
     suspend fun rom(id: Long): RomDetail = get<RomResponse>(url("api/roms/$id")).rom

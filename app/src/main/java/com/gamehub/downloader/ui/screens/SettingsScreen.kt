@@ -36,6 +36,10 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.Memory
+import com.gamehub.downloader.ui.components.DeckToggle
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +72,7 @@ fun SettingsScreen(
     onOpenSystems: (String?) -> Unit,
     onOpenVita3k: () -> Unit,
     onOpenSaveSync: () -> Unit,
+    onOpenBios: () -> Unit,
 ) {
     val app = LocalContext.current.applicationContext as GameHubApp
     val settings by app.settings.settings.collectAsState(initial = null)
@@ -142,6 +147,56 @@ fun SettingsScreen(
                 ) { DeckButton("Open", onOpenSaveSync) }
             }
 
+            item {
+                SettingsRow(
+                    Icons.Default.Memory,
+                    "BIOS & firmware",
+                    if (settings?.retroarchSystemUri == null) "Install the BIOS files stored on GameHub into RetroArch's system folder"
+                    else "RetroArch system folder: ${com.gamehub.downloader.data.FolderStorage.describe(settings?.retroarchSystemUri ?: "")}",
+                ) { DeckButton("Open", onOpenBios) }
+            }
+            item {
+                val s = settings
+                val context = LocalContext.current
+                var usage by remember { mutableStateOf(app.playtime.hasUsageAccess()) }
+                val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+                androidx.compose.runtime.DisposableEffect(lifecycle) {
+                    val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+                        if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) usage = app.playtime.hasUsageAccess()
+                    }
+                    lifecycle.addObserver(obs)
+                    onDispose { lifecycle.removeObserver(obs) }
+                }
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    DeckToggle(
+                        label = "Track playtime",
+                        description = "Games started with Play show as \"now playing\" on GameHub, and the time you play is added to them",
+                        checked = s?.trackPlaytime ?: true,
+                        onCheckedChange = { on -> scope.launch { app.settings.setTrackPlaytime(on) } },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (s?.trackPlaytime != false) {
+                        Text(
+                            if (usage) "Usage access is on: playtime is how long the emulator was actually on screen."
+                            else "Without usage access, playtime is the time until you come back to this app (up to 4 hours). " +
+                                "Allow usage access for exact times.",
+                            color = DeckColors.TextDim, fontSize = 12.sp,
+                        )
+                        if (!usage) DeckButton("Allow usage access", {
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                                        .setData(android.net.Uri.parse("package:${context.packageName}"))
+                                )
+                            }.onFailure { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+                        })
+                    }
+                }
+            }
+
             item { SectionTitle("Download folders", Modifier.padding(top = 14.dp)) }
             item {
                 SettingsRow(
@@ -169,6 +224,49 @@ fun SettingsScreen(
                         color = DeckColors.TextDim, fontSize = 13.sp,
                     )
                     BackgroundStatusCard()
+                }
+            }
+
+            item { SectionTitle("Display", Modifier.padding(top = 14.dp)) }
+            item {
+                DeckToggle(
+                    label = "Use the second screen",
+                    description = "On devices with two screens (like the AYN Thor), show the selected game's art and details and download progress on the other screen while this app is open",
+                    checked = settings?.secondScreen ?: true,
+                    onCheckedChange = { on -> scope.launch { app.settings.setSecondScreen(on) } },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            item { SectionTitle("Updates", Modifier.padding(top = 14.dp)) }
+            item {
+                val upd by app.updater.state.collectAsState()
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    DeckToggle(
+                        label = "Check for updates",
+                        description = "Look for a new version on GitHub when the app starts",
+                        checked = settings?.checkUpdates ?: true,
+                        onCheckedChange = { on -> scope.launch { app.settings.setCheckUpdates(on) } },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            when {
+                                upd.checking -> "Checking…"
+                                upd.available != null -> "Version ${upd.available!!.version} is available"
+                                upd.upToDate -> "You have the latest version (${BuildConfig.VERSION_NAME})"
+                                upd.error != null -> upd.error!!
+                                else -> "GameHub Downloader ${BuildConfig.VERSION_NAME}"
+                            },
+                            Modifier.weight(1f),
+                            color = if (upd.error != null) DeckColors.Error else DeckColors.TextDim,
+                            fontSize = 13.sp,
+                        )
+                        DeckButton("Check now", { scope.launch { app.updater.check(manual = true) } }, enabled = !upd.checking)
+                    }
                 }
             }
 

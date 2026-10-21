@@ -67,6 +67,21 @@ data class SaveSyncSettings(
     val syncOnOpen: Boolean = true,
     /** RetroArch core folder learned per system from existing saves, e.g. "gba" → "mGBA". */
     val retroarchCoreDirs: Map<String, String> = emptyMap(),
+    /** Also sync in the background every [backgroundHours] hours (0 = off). */
+    val backgroundHours: Int = 0,
+    /** Background sync only on Wi-Fi / unmetered networks. */
+    val backgroundUnmetered: Boolean = true,
+)
+
+/** A game started from the Play button; closed (and its time sent to GameHub) when the app comes back. */
+@Serializable
+data class PlaySession(
+    val connectionId: String,
+    val romId: Long,
+    val title: String,
+    /** The emulator's package, for measuring time with usage access. */
+    val packageName: String,
+    val startedAt: Long,
 )
 
 @Serializable
@@ -77,6 +92,22 @@ data class AppSettings(
     /** Vita3K's storage folder (the one containing ux0), granted by the user. */
     val vita3kFolderUri: String? = null,
     val saveSync: SaveSyncSettings = SaveSyncSettings(),
+    /** Emulator chosen per system for the Play button, e.g. "nes" → "retroarch:fceumm" (see [Emulators]). */
+    val launchers: Map<String, String> = emptyMap(),
+    /** The game launched last, until its playtime has been recorded. */
+    val playSession: PlaySession? = null,
+    /** Report time played on this device to GameHub. */
+    val trackPlaytime: Boolean = true,
+    /** RetroArch's "system" folder (BIOS files go here). */
+    val retroarchSystemUri: String? = null,
+    /** Folder each standalone emulator reads BIOS files from, by GameHub's emulator id ("duckstation", "citra"…). */
+    val biosFolders: Map<String, String> = emptyMap(),
+    /** Check GitHub for a newer version of the app when it starts. */
+    val checkUpdates: Boolean = true,
+    /** Release version the user chose to skip. */
+    val skippedUpdate: String? = null,
+    /** Show game art and download progress on a second screen (the AYN Thor's lower display). */
+    val secondScreen: Boolean = true,
 ) {
     val activeConnection: Connection?
         get() = connections.firstOrNull { it.id == activeConnectionId } ?: connections.firstOrNull()
@@ -143,6 +174,26 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setVita3kFolder(treeUri: String?) = update { it.copy(vita3kFolderUri = treeUri) }
+
+    suspend fun setLauncher(systemKey: String, launcherId: String?) = update { s ->
+        s.copy(launchers = if (launcherId == null) s.launchers - systemKey else s.launchers + (systemKey to launcherId))
+    }
+
+    suspend fun setPlaySession(session: PlaySession?) = update { it.copy(playSession = session) }
+
+    suspend fun setTrackPlaytime(on: Boolean) = update { it.copy(trackPlaytime = on) }
+
+    suspend fun setRetroarchSystem(treeUri: String?) = update { it.copy(retroarchSystemUri = treeUri) }
+
+    suspend fun setBiosFolder(emulatorId: String, treeUri: String?) = update { s ->
+        s.copy(biosFolders = if (treeUri == null) s.biosFolders - emulatorId else s.biosFolders + (emulatorId to treeUri))
+    }
+
+    suspend fun setCheckUpdates(on: Boolean) = update { it.copy(checkUpdates = on) }
+
+    suspend fun setSkippedUpdate(version: String?) = update { it.copy(skippedUpdate = version) }
+
+    suspend fun setSecondScreen(on: Boolean) = update { it.copy(secondScreen = on) }
 
     suspend fun updateSaveSync(transform: (SaveSyncSettings) -> SaveSyncSettings) = update { it.copy(saveSync = transform(it.saveSync)) }
 

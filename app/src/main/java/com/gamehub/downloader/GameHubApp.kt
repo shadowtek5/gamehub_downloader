@@ -9,6 +9,9 @@ import com.gamehub.downloader.api.GameHubApi
 import com.gamehub.downloader.data.Connection
 import com.gamehub.downloader.data.DownloadHistory
 import com.gamehub.downloader.data.InstalledIndex
+import com.gamehub.downloader.data.Playtime
+import com.gamehub.downloader.data.SaveSyncWorker
+import com.gamehub.downloader.data.Updater
 import com.gamehub.downloader.data.SaveSync
 import com.gamehub.downloader.data.SettingsRepository
 import com.gamehub.downloader.data.Vita3k
@@ -18,6 +21,9 @@ import com.gamehub.downloader.ui.Gamepad
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -34,6 +40,14 @@ class GameHubApp : Application(), SingletonImageLoader.Factory {
     lateinit var installed: InstalledIndex private set
     lateinit var vita3k: Vita3k private set
     lateinit var saveSync: SaveSync private set
+    lateinit var playtime: Playtime private set
+    lateinit var updater: Updater private set
+    lateinit var emulatorCatalogs: com.gamehub.downloader.data.EmulatorCatalogs private set
+
+    /** Short app-wide messages shown as a toast at the top of the screen. */
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val messages: SharedFlow<String> = _messages.asSharedFlow()
+    fun showMessage(text: String) { _messages.tryEmit(text) }
 
     /** Connections cached for the image interceptor, which can't suspend. */
     @Volatile private var connections: List<Connection> = emptyList()
@@ -51,6 +65,17 @@ class GameHubApp : Application(), SingletonImageLoader.Factory {
         installed = InstalledIndex(this, settings)
         vita3k = Vita3k(this, settings)
         saveSync = SaveSync(this)
+        playtime = Playtime(this)
+        updater = Updater(this)
+        emulatorCatalogs = com.gamehub.downloader.data.EmulatorCatalogs(this)
+        // Settings › Save sync › background schedule.
+        appScope.launch {
+            settings.settings.map { it.saveSync.backgroundHours to it.saveSync.backgroundUnmetered }.distinctUntilChanged().collect {
+                runCatching { SaveSyncWorker.schedule(this@GameHubApp, settings.current().saveSync) }
+            }
+        }
+        // Look for a newer release once per launch (Settings › Updates).
+        appScope.launch { if (settings.current().checkUpdates) updater.check() }
         // Rescan Vita3K's installed games whenever its folder is set or changed.
         appScope.launch {
             settings.settings.map { it.vita3kFolderUri }.distinctUntilChanged().collect { vita3k.refresh() }

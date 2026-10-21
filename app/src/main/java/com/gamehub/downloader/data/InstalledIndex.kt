@@ -124,15 +124,18 @@ class InstalledIndex(private val context: Context, private val settings: Setting
     }
 
     /** Like [FolderStorage.resolve] but never creates the sub-folder. */
-    private fun find(m: FolderMapping): Uri? {
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(m.treeUri)) ?: return null
-        if (!root.canRead()) return null
-        if (m.subPath.isEmpty()) return root.uri
-        return root.findFile(m.subPath)?.takeIf { it.isDirectory }?.uri
-    }
+    private fun find(m: FolderMapping): Uri? = findDir(context, m)
 
     companion object {
         private fun key(connectionId: String, systemKey: String) = "$connectionId|$systemKey"
+
+        /** A mapping's folder (as a tree document URI), or null if it doesn't exist; never creates it. */
+        fun findDir(context: Context, m: FolderMapping): Uri? {
+            val root = DocumentFile.fromTreeUri(context, Uri.parse(m.treeUri)) ?: return null
+            if (!root.canRead()) return null
+            if (m.subPath.isEmpty()) return root.uri
+            return root.findFile(m.subPath)?.takeIf { it.isDirectory }?.uri
+        }
 
         private val tags = Regex("""\s*[(\[][^)\]]*[)\]]""")
 

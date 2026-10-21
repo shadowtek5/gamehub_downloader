@@ -34,6 +34,14 @@ A controller-first Android app (styled like the Steam Deck UI) for browsing a [G
   - **PPSSPP, Vita3K, Azahar, DS:** each game's save folder (PSP `SAVEDATA/<game id>*`, Vita `ux0/user/00/savedata/<title id>`, 3DS `title/…/data`, DS `<ROM>.sav`) is uploaded as a GameHub *device save* and restored on other devices.
   - The side that changed since the last sync wins. If both changed, the save is listed under **Needs attention** and you pick which copy to keep. Uploads are conditional (`If-Match`), so another device's newer save is never overwritten, and local saves are backed up (last 5 per game, in app storage) before being replaced.
   - DuckStation, AetherSX2 and Dolphin keep saves in their private `Android/data` folder, which other apps can't read.
+- **Play.** Installed games get a **Play** button that starts them in an emulator on the device, using the same emulator list as Cocoon FE (served by GameHub 0.1.11+; older servers use a built-in list): RetroArch with any core, DuckStation, AetherSX2/NetherSX2, PPSSPP, Dolphin, melonDS, Azahar/Lime3DS, Eden and many more. The RetroArch core you already use for a system is picked by default; *Change* on the game page picks another emulator for that system.
+- **Playtime.** Games started with Play show as "now playing" on GameHub, and the time is added to the game's playtime when you come back to the app. With Android's *usage access* (Settings › Track playtime › Allow usage access) it's how long the emulator was actually on screen; otherwise the time until you return (up to 4 hours).
+- **Favorites and collections.** Browse your GameHub favorites and collections from the top of the systems rail, star games from their page, and **Download all** to queue everything in a collection, your favorites or a system that isn't on the device yet.
+- **Free space.** Downloads that won't fit are refused up front (the "Download all" check adds up the whole batch), and *Settings › Download folders* shows each drive's free space and how much each system's folder uses.
+- **BIOS & firmware** (*Settings › BIOS & firmware*). Installs the BIOS files stored in GameHub's *Settings › Firmware* into every emulator on the device that uses them: RetroArch's system folder (exact core file names) and the BIOS folder of standalone emulators such as DuckStation, AetherSX2/NetherSX2/ARMSX2, melonDS, Azahar/Lime3DS, Flycast, Yaba Sanshiro and Eden. Pick each emulator's folder once; files already there are skipped.
+- **Background save sync.** Besides "when the app opens", saves can sync every 1–24 hours in the background (optionally only on Wi-Fi), with a notification when something changed.
+- **Updates.** The app checks GitHub Releases at start-up and offers newer versions; Android asks before installing. *Settings › Updates › Check now* checks on demand.
+- **Second screen.** On two-screen devices like the AYN Thor, the other screen shows the selected game's art and details, plus download progress, while the app is open.
 - **Adaptive layout.** Landscape shows a systems rail plus a cover grid. Portrait, and narrow screens like the Thor's second display, show system tabs plus a grid.
 
 ## Controls
@@ -86,6 +94,11 @@ On the Thor, enable *Developer options › USB debugging*, then plug it in.
 | `POST /api/saves/match` | Pairs save file names (`<ROM name>.srm`) with library games |
 | `GET/POST /api/roms/{id}/save` | Battery save download / conditional upload (`If-Match`, `If-None-Match: *`) |
 | `GET/POST /api/device-saves/{platform}/{key}` | Device save (zip) download / conditional upload |
+| `GET /api/library?tab=favorites`, `?collection={id}` | Favorites and collection grids |
+| `GET /api/collections`, `POST /api/roms/{id}/favorite` | Collections list, star / unstar |
+| `GET /api/emulators` | Android emulators per system (Cocoon FE's list) and where standalone emulators read BIOS files (0.1.11+) |
+| `GET /api/firmware`, `GET /api/firmware/{id}` | BIOS files on GameHub, and downloading one |
+| `POST /api/roms/{id}/heartbeat`, `/playtime`, `/stop-playing` | "Now playing" and playtime for games started with Play (`/playtime` needs 0.1.11+; older servers get one heartbeat per minute) |
 
 Every request sends `Authorization: Bearer ghk_…`.
 

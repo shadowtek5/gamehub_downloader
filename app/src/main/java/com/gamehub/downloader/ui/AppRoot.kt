@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -22,6 +23,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -87,6 +90,7 @@ object Routes {
     const val CONTROLS = "controls"
     const val VITA3K = "vita3k"
     const val SAVE_SYNC = "savesync"
+    const val BIOS = "bios"
     const val SYSTEMS = "systems?conn={conn}"
     fun systems(connId: String? = null) = if (connId == null) "systems" else "systems?conn=$connId"
 
@@ -151,6 +155,7 @@ fun AppRoot(openDownloads: MutableStateFlow<Boolean>, openSaveSync: MutableState
                     onOpenSystems = { nav.navigate(Routes.systems(it)) },
                     onOpenVita3k = { nav.navigate(Routes.VITA3K) },
                     onOpenSaveSync = { nav.navigate(Routes.SAVE_SYNC) },
+                    onOpenBios = { nav.navigate(Routes.BIOS) },
                 )
             }
             composable(
@@ -171,6 +176,9 @@ fun AppRoot(openDownloads: MutableStateFlow<Boolean>, openSaveSync: MutableState
             composable(Routes.SAVE_SYNC) {
                 SaveSyncScreen(onBack = { nav.popBackStack() })
             }
+            composable(Routes.BIOS) {
+                com.gamehub.downloader.ui.screens.BiosScreen(onBack = { nav.popBackStack() })
+            }
             composable(Routes.VITA3K) {
                 Vita3kScreen(onBack = { nav.popBackStack() })
             }
@@ -188,7 +196,13 @@ fun AppRoot(openDownloads: MutableStateFlow<Boolean>, openSaveSync: MutableState
             }
         }
 
+        UpdatePrompt()
+
         var toast by remember { mutableStateOf<String?>(null) }
+        val context = LocalContext.current
+        LaunchedEffect(Unit) {
+            (context.applicationContext as com.gamehub.downloader.GameHubApp).messages.collect { toast = it }
+        }
         LaunchedEffect(Unit) {
             Gamepad.connected.collect { c ->
                 val auto = Gamepad.profiles.value[c.key]?.isAuto ?: true
@@ -206,3 +220,54 @@ fun AppRoot(openDownloads: MutableStateFlow<Boolean>, openSaveSync: MutableState
         }
     }
 }
+
+/** Offers a newer release from GitHub (checked at start-up, or from Settings › Updates). */
+@Composable
+private fun UpdatePrompt() {
+    val app = LocalContext.current.applicationContext as com.gamehub.downloader.GameHubApp
+    val state by app.updater.state.collectAsState()
+    var later by remember { mutableStateOf<String?>(null) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val update = state.available ?: return
+    if (later == update.version && state.progress == null) return
+    com.gamehub.downloader.ui.components.DeckDialog(
+        onDismissRequest = { if (state.progress == null) later = update.version },
+        title = { Text("Update to ${update.version}?") },
+        text = {
+            androidx.compose.foundation.layout.Column(
+                Modifier.androidx_verticalScroll(),
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+            ) {
+                Text("You have ${com.gamehub.downloader.BuildConfig.VERSION_NAME}.", color = DeckColors.TextDim)
+                if (update.notes.isNotBlank()) Text(update.notes.take(1500), fontSize = 13.sp)
+                state.progress?.let { (done, total) ->
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { if (total > 0) done.toFloat() / total else 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = DeckColors.Accent,
+                        trackColor = DeckColors.SurfaceHigh,
+                    )
+                }
+                state.error?.let { Text(it, color = DeckColors.Error, fontSize = 13.sp) }
+            }
+        },
+        confirmButton = {
+            com.gamehub.downloader.ui.components.DeckButton(
+                if (state.progress != null) "Downloading…" else "Update",
+                { scope.launch { app.updater.install() } },
+                primary = true,
+                enabled = state.progress == null,
+            )
+        },
+        dismissButton = {
+            androidx.compose.foundation.layout.Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                com.gamehub.downloader.ui.components.DeckButton("Skip this version", { scope.launch { app.updater.skip() } }, enabled = state.progress == null)
+                com.gamehub.downloader.ui.components.DeckButton("Later", { later = update.version }, enabled = state.progress == null)
+            }
+        },
+    )
+}
+
+@Composable
+private fun Modifier.androidx_verticalScroll(): Modifier =
+    this.then(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()))

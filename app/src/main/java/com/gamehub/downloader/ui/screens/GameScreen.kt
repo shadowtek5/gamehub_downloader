@@ -44,6 +44,8 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
@@ -86,6 +88,8 @@ import com.gamehub.downloader.download.DownloadMode
 import com.gamehub.downloader.download.DownloadState
 import com.gamehub.downloader.download.formatBytes
 import com.gamehub.downloader.ui.DeckLayout
+import com.gamehub.downloader.ui.SecondScreen
+import com.gamehub.downloader.ui.SpotlightGame
 import com.gamehub.downloader.ui.GameAction
 import com.gamehub.downloader.ui.OnAction
 import com.gamehub.downloader.ui.components.DeckButton
@@ -113,6 +117,18 @@ fun GameScreen(
     vm: GameViewModel = viewModel(key = "game-$connectionId-$romId"),
 ) {
     LaunchedEffect(connectionId, romId) { vm.load(connectionId, romId) }
+    val spotRom = vm.state.collectAsState().value.rom
+    LaunchedEffect(spotRom?.id) {
+        val r = spotRom ?: return@LaunchedEffect
+        SecondScreen.spotlight.value = SpotlightGame(
+            title = r.title,
+            system = r.platformName ?: r.platformSlug,
+            boxartUrl = vm.mediaUrl(r.boxartUrl, 600),
+            heroUrl = vm.mediaUrl(r.heroUrl ?: r.screenshotUrl, 1200),
+            description = r.description,
+            details = listOfNotNull(r.releaseDate?.take(4), r.developer, r.genre).joinToString(" · ").ifBlank { null },
+        )
+    }
     val state by vm.state.collectAsState()
     val tasks by vm.tasks.collectAsState()
     val history by vm.history.collectAsState(initial = emptyList())
@@ -192,6 +208,9 @@ fun GameScreen(
                             onChooseVita3kFolder = { pickVita3kFolder(null) },
                             onInstallVita3k = vm::installInVita3k,
                             onPlayVita3k = vm::playInVita3k,
+                            onPlay = vm::play,
+                            onChooseLauncher = vm::openLauncherChoice,
+                            onToggleFavorite = vm::toggleFavorite,
                             onSetExtract = vm::setExtract,
                             onTrailer = { url ->
                                 runCatching {
@@ -235,6 +254,36 @@ fun GameScreen(
                     .background(DeckColors.SurfaceHigh).padding(horizontal = 18.dp, vertical = 10.dp),
             )
         }
+    }
+
+    if (state.choosingLauncher) {
+        DeckDialog(
+            onDismissRequest = vm::closeLauncherChoice,
+            title = { Text("Play ${state.rom?.platformName ?: ""} games with") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    state.launchers.forEach { l ->
+                        val fr = remember { FocusRequester() }
+                        val current = l.id == state.launcher?.id
+                        DeckFocusable(onClick = { vm.chooseLauncher(l) }, modifier = Modifier.fillMaxWidth().focusRequester(fr)) {
+                            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.SportsEsports, null, tint = if (current) DeckColors.Accent else DeckColors.TextDim)
+                                Spacer(Modifier.width(12.dp))
+                                Text(l.label, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                                if (current) Icon(Icons.Default.CheckCircle, null, tint = DeckColors.Accent)
+                            }
+                        }
+                        if (current) LaunchedEffect(Unit) { runCatching { fr.requestFocus() } }
+                    }
+                    Text(
+                        "RetroArch cores have to be downloaded in RetroArch first (Main Menu › Load Core › Download a Core).",
+                        color = DeckColors.TextDim, fontSize = 13.sp,
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = { DeckButton("Close", vm::closeLauncherChoice) },
+        )
     }
 
     when (val p = state.prompt) {
@@ -322,6 +371,9 @@ private fun Details(
     onChooseVita3kFolder: () -> Unit,
     onInstallVita3k: () -> Unit,
     onPlayVita3k: () -> Unit,
+    onPlay: () -> Unit,
+    onChooseLauncher: () -> Unit,
+    onToggleFavorite: () -> Unit,
     onSetExtract: (Boolean) -> Unit,
     onTrailer: (String) -> Unit,
     relatedIds: Map<String, Long?>,
@@ -332,7 +384,9 @@ private fun Details(
     val active = taskState == DownloadState.Queued || taskState == DownloadState.Running ||
         taskState == DownloadState.Retrying || taskState == DownloadState.Extracting || taskState == DownloadState.Installing
     val downloadFocus = remember { FocusRequester() }
-    LaunchedEffect(promptOpen) { if (!promptOpen) runCatching { downloadFocus.requestFocus() } }
+    // Installed and an emulator is set up: Play comes first and takes the initial focus.
+    val canPlay = installedFile != null && state.launcher != null && !SystemRules.supportsVita3k(rom.platformSlug)
+    LaunchedEffect(promptOpen, canPlay) { if (!promptOpen) runCatching { downloadFocus.requestFocus() } }
     val trailer = rom.trailerUrl?.takeIf { it.startsWith("http") }
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -350,6 +404,9 @@ private fun Details(
             Text(rom.title, fontSize = 28.sp, fontWeight = FontWeight.Bold, lineHeight = 32.sp)
         }
 
+        rom.playtimeSeconds?.takeIf { it >= 60 }?.let { secs ->
+            Text("Played ${formatPlaytime(secs)}" + (rom.lastPlayedAt?.take(10)?.let { " · last $it" } ?: ""), color = DeckColors.TextDim, fontSize = 14.sp)
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Tag(rom.platformName ?: rom.platformSlug, accent = true)
             rom.releaseDate?.take(4)?.let { Tag(it) }
@@ -392,20 +449,23 @@ private fun Details(
                 DeckButton("Cancel", onCancel, Modifier.focusRequester(downloadFocus), icon = Icons.Default.Close)
             }
         } else {
+            val firstFocus = if (canPlay) Modifier else Modifier.focusRequester(downloadFocus)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (canPlay) DeckButton("Play", onPlay, Modifier.focusRequester(downloadFocus), icon = Icons.Default.PlayArrow, primary = true)
                 if (rom.isMultiDisc) {
-                    DeckButton("Download all discs (.zip)", { onDownload(DownloadMode.DiscsZip) }, Modifier.focusRequester(downloadFocus), icon = Icons.Default.Download, primary = true)
+                    DeckButton("Download all discs (.zip)", { onDownload(DownloadMode.DiscsZip) }, firstFocus, icon = Icons.Default.Download, primary = !canPlay)
                     DeckButton("This disc only", { onDownload(DownloadMode.File) }, icon = Icons.Default.Album)
                 } else {
                     val have = downloadedAt != null || installedFile != null
                     DeckButton(
                         if (have) "Download again" else "Download",
                         { onDownload(DownloadMode.File) },
-                        Modifier.focusRequester(downloadFocus),
+                        firstFocus,
                         icon = Icons.Default.Download,
                         primary = !have,
                     )
                 }
+                DeckButton(if (state.favorite) "Favorited" else "Favorite", onToggleFavorite, icon = if (state.favorite) Icons.Default.Star else Icons.Default.StarBorder)
                 if (trailer != null) DeckButton("Watch trailer", { onTrailer(trailer) }, icon = Icons.Default.PlayCircle)
                 if (state.vita3kInstalled) DeckButton("Play in Vita3K", onPlayVita3k, icon = Icons.Default.PlayArrow, primary = true)
                 if (installedFile != null || state.vita3kInstalled) DeckButton("Delete", onDelete, icon = Icons.Default.Delete)
@@ -415,6 +475,9 @@ private fun Details(
             Notice(Icons.Default.Warning, DeckColors.Error, "Last attempt failed: $taskError")
         }
         if (!active) {
+            if (installedFile != null && !SystemRules.supportsVita3k(rom.platformSlug)) {
+                LauncherRow(state.launcher?.label, state.launchers.size, onChooseLauncher)
+            }
             when {
                 installedFile != null -> Notice(Icons.Default.CheckCircle, DeckColors.Success, "Installed: $installedFile")
                 downloadedAt != null -> Notice(Icons.Default.Info, DeckColors.TextDim, "Downloaded earlier: $downloadedAt (no longer found in the folder)")
@@ -832,4 +895,30 @@ private fun FolderPromptDialog(
         confirmButton = {},
         dismissButton = { DeckButton("Cancel", onDismiss) },
     )
+}
+
+@Composable
+private fun LauncherRow(label: String?, count: Int, onChange: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.SportsEsports, null, tint = DeckColors.Accent)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Plays with", color = DeckColors.TextDim, fontSize = 12.sp)
+            Text(label ?: "No emulator for this system is installed", fontWeight = FontWeight.SemiBold)
+        }
+        if (count > 1) DeckButton("Change", onChange)
+    }
+}
+
+private fun formatPlaytime(seconds: Long): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    return when {
+        h > 0 && m > 0 -> "${h}h ${m}m"
+        h > 0 -> "${h}h"
+        else -> "$m min"
+    }
 }

@@ -18,6 +18,12 @@ import androidx.core.view.WindowInsetsCompat
 import com.gamehub.downloader.ui.AppRoot
 import com.gamehub.downloader.ui.GameAction
 import com.gamehub.downloader.ui.Gamepad
+import com.gamehub.downloader.ui.SecondScreen
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import com.gamehub.downloader.ui.theme.DeckTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -48,6 +54,19 @@ class MainActivity : ComponentActivity() {
         setContent {
             DeckTheme { AppRoot(openDownloads, openSaveSync) }
         }
+        // Game art and download progress on a second screen (the AYN Thor's lower display) while the app is open.
+        val app = application as GameHubApp
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                try {
+                    app.settings.settings.map { it.secondScreen }.distinctUntilChanged().collect { on ->
+                        if (on) SecondScreen.attach(this@MainActivity) else SecondScreen.detach(this@MainActivity)
+                    }
+                } finally {
+                    SecondScreen.detach(this@MainActivity)
+                }
+            }
+        }
     }
 
     override fun onStart() {
@@ -55,7 +74,13 @@ class MainActivity : ComponentActivity() {
         // Settings › Save sync › "Sync when the app opens" (throttled inside SaveSync; the outcome
         // is posted as a notification when anything changed).
         val app = application as GameHubApp
-        app.appScope.launch { app.saveSync.autoSyncIfDue() }
+        app.appScope.launch {
+            // Back from a game started with Play: add the session to the game's playtime on GameHub.
+            app.playtime.finish()?.takeIf { it >= 60 }?.let { secs ->
+                app.showMessage("Played ${secs / 60} min · added to your GameHub playtime")
+            }
+            app.saveSync.autoSyncIfDue()
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

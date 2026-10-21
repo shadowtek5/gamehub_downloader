@@ -53,6 +53,7 @@ import com.gamehub.downloader.ui.theme.DeckColors
 import kotlinx.coroutines.launch
 
 /** Settings › Save sync: where each emulator keeps its saves, Sync now, conflicts and recent activity. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SaveSyncScreen(onBack: () -> Unit) {
     val context = LocalContext.current
@@ -184,6 +185,36 @@ fun SaveSyncScreen(onBack: () -> Unit) {
                     onCheckedChange = { on -> scope.launch { app.settings.updateSaveSync { it.copy(syncOnOpen = on) } } },
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+            item {
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("Sync in the background", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Also sync on a schedule, even when the app is closed (only while the battery isn't low). " +
+                            "You'll get a notification when something changed.",
+                        color = DeckColors.TextDim, fontSize = 13.sp,
+                    )
+                    androidx.compose.foundation.layout.FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(0 to "Off", 1 to "Every hour", 3 to "Every 3 hours", 6 to "Every 6 hours", 12 to "Every 12 hours", 24 to "Daily").forEach { (h, label) ->
+                            DeckButton(label, { scope.launch { app.settings.updateSaveSync { it.copy(backgroundHours = h) } } }, primary = s.backgroundHours == h)
+                        }
+                    }
+                    if (s.backgroundHours > 0) {
+                        DeckToggle(
+                            label = "Only on Wi-Fi",
+                            description = "Skip background syncs on mobile data",
+                            checked = s.backgroundUnmetered,
+                            onCheckedChange = { on -> scope.launch { app.settings.updateSaveSync { it.copy(backgroundUnmetered = on) } } },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
             }
 
             item { SectionTitle("Emulators", Modifier.padding(top = 8.dp)) }

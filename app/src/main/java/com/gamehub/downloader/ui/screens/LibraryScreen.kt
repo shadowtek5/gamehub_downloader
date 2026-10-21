@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -37,6 +38,9 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.CollectionsBookmark
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -73,7 +77,10 @@ import com.gamehub.downloader.data.InstalledIndex
 import com.gamehub.downloader.data.SystemRules
 import com.gamehub.downloader.download.DownloadState
 import com.gamehub.downloader.download.DownloadTask
+import com.gamehub.downloader.download.formatBytes
 import com.gamehub.downloader.ui.DeckLayout
+import com.gamehub.downloader.ui.SecondScreen
+import com.gamehub.downloader.ui.SpotlightGame
 import com.gamehub.downloader.ui.GameAction
 import com.gamehub.downloader.ui.OnAction
 import com.gamehub.downloader.ui.components.DeckButton
@@ -127,7 +134,11 @@ fun LibraryScreen(
     // B on the main screen: first back to "All games", then ask before exiting.
     var confirmExit by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler(enabled = !searchOpen) {
-        if (state.selected != null) vm.selectPlatform(null) else confirmExit = true
+        when {
+            state.selected != null -> vm.selectPlatform(null)
+            state.source != LibrarySource.All -> vm.setSource(LibrarySource.All)
+            else -> confirmExit = true
+        }
     }
     if (confirmExit) {
         val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
@@ -141,6 +152,12 @@ fun LibraryScreen(
         )
     }
     val activeCount = tasks.count { it.isActive }
+    var collectionPicker by remember { mutableStateOf(false) }
+    val appCtx = androidx.compose.ui.platform.LocalContext.current.applicationContext as com.gamehub.downloader.GameHubApp
+    LaunchedEffect(state.message) {
+        state.message?.let { appCtx.showMessage(it); vm.clearMessage() }
+    }
+    val openCollections = { vm.loadCollections(); collectionPicker = true }
 
     OnAction { a ->
         when (a) {
@@ -193,11 +210,11 @@ fun LibraryScreen(
                     onAction = vm::reload,
                 )
                 layout.useRail -> Row(Modifier.fillMaxSize()) {
-                    SystemRail(state.platforms, state.selected, vm::selectPlatform, installedCount, Modifier.width(if (layout.short) 196.dp else 230.dp).fillMaxHeight())
+                    SystemRail(state.platforms, state.selected, state.source, vm::selectPlatform, vm::setSource, openCollections, installedCount, Modifier.width(if (layout.short) 196.dp else 230.dp).fillMaxHeight())
                     GameGrid(state, downloaded, isInstalled, tasks, layout, vm, onOpenGame, Modifier.weight(1f))
                 }
                 else -> Column(Modifier.fillMaxSize()) {
-                    SystemTabs(state.platforms, state.selected, vm::selectPlatform)
+                    SystemTabs(state.platforms, state.selected, state.source, vm::selectPlatform, vm::setSource, openCollections)
                     GameGrid(state, downloaded, isInstalled, tasks, layout, vm, onOpenGame, Modifier.weight(1f))
                 }
             }
@@ -212,6 +229,73 @@ fun LibraryScreen(
                 )
             )
         }
+    }
+
+    if (collectionPicker) {
+        DeckDialog(
+            onDismissRequest = { collectionPicker = false },
+            containerColor = DeckColors.Surface,
+            title = { Text("Collections") },
+            text = {
+                Column(Modifier.verticalScrollCompat(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val list = state.collections
+                    when {
+                        state.collectionsError != null -> Text(state.collectionsError ?: "", color = DeckColors.Error)
+                        list == null -> CircularProgressIndicator(Modifier.size(28.dp), color = DeckColors.Accent, strokeWidth = 3.dp)
+                        list.isEmpty() -> Text("You don't have any collections yet. Make one in GameHub (Library › Collections).", color = DeckColors.TextDim)
+                        else -> list.forEachIndexed { i, c ->
+                            val fr = remember { FocusRequester() }
+                            DeckFocusable(
+                                onClick = { vm.setSource(LibrarySource.Collection(c.id, c.name)); vm.selectPlatform(null); collectionPicker = false },
+                                modifier = Modifier.fillMaxWidth().focusRequester(fr),
+                            ) {
+                                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.CollectionsBookmark, null, tint = DeckColors.Accent)
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(c.name, fontWeight = FontWeight.SemiBold)
+                                        c.description?.takeIf { it.isNotBlank() }?.let { Text(it, color = DeckColors.TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                    }
+                                    if (c.isSmart == 1) Text("Smart", color = DeckColors.TextDim, fontSize = 12.sp)
+                                }
+                            }
+                            if (i == 0) LaunchedEffect(Unit) { runCatching { fr.requestFocus() } }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { DeckButton("Close", { collectionPicker = false }) },
+        )
+    }
+
+    state.batch?.let { plan ->
+        DeckDialog(
+            onDismissRequest = vm::dismissDownloadAll,
+            icon = { Icon(if (plan.tooBig.isEmpty()) Icons.Default.Download else Icons.Default.Warning, null, tint = if (plan.tooBig.isEmpty()) DeckColors.Accent else DeckColors.Warning) },
+            title = {
+                Text(
+                    if (plan.count == 0) "Nothing to download"
+                    else "Download ${plan.count} game${if (plan.count == 1) "" else "s"}?"
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (plan.count > 0) Text("From ${plan.label} · about ${formatBytes(plan.totalBytes)}")
+                    if (plan.alreadyHave > 0) Text("${plan.alreadyHave} already on this device or queued.", color = DeckColors.TextDim)
+                    plan.noFolder.forEach { (sys, n) ->
+                        Text("$n $sys game${if (n == 1) "" else "s"} skipped: choose a folder for $sys first (or a ROMs base folder in Settings).", color = DeckColors.Warning)
+                    }
+                    plan.tooBig.forEach { (vol, p) ->
+                        Text("Not enough space on $vol: needs ${formatBytes(p.first)}, ${formatBytes(p.second)} free.", color = DeckColors.Error)
+                    }
+                }
+            },
+            confirmButton = {
+                if (plan.count > 0) DeckButton("Download", vm::confirmDownloadAll, icon = Icons.Default.Download, primary = plan.tooBig.isEmpty(), enabled = plan.tooBig.isEmpty())
+            },
+            dismissButton = { FocusedButton(if (plan.count == 0) "OK" else "Cancel", primary = plan.count == 0 || plan.tooBig.isNotEmpty()) { vm.dismissDownloadAll() } },
+        )
     }
 
     if (connectionPicker) {
@@ -316,7 +400,10 @@ fun IconAction(icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: (
 private fun SystemRail(
     platforms: List<Platform>,
     selected: String?,
+    source: LibrarySource,
     onSelect: (String?) -> Unit,
+    onSource: (LibrarySource) -> Unit,
+    onCollections: () -> Unit,
     installedCount: (String) -> Int?,
     modifier: Modifier,
 ) {
@@ -327,9 +414,32 @@ private fun SystemRail(
         contentPadding = PaddingValues(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        item { SystemRow("All games", null, platforms.sumOf { it.games }, null, selected == null) { onSelect(null) } }
+        item { SystemRow("All games", null, platforms.sumOf { it.games }, null, selected == null && source == LibrarySource.All) { onSource(LibrarySource.All); onSelect(null) } }
+        item { SourceRow("Favorites", Icons.Default.Star, selected == null && source == LibrarySource.Favorites) { onSource(LibrarySource.Favorites); onSelect(null) } }
+        item {
+            val col = source as? LibrarySource.Collection
+            SourceRow(col?.name ?: "Collections", Icons.Default.CollectionsBookmark, selected == null && col != null, onCollections)
+        }
         items(platforms, key = { it.slug }) { p ->
             SystemRow(p.name, p.shortName, p.games, installedCount(p.slug), selected == p.slug) { onSelect(p.slug) }
+        }
+    }
+}
+
+@Composable
+private fun SourceRow(name: String, icon: androidx.compose.ui.graphics.vector.ImageVector, selected: Boolean, onClick: () -> Unit) {
+    DeckFocusable(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        background = if (selected) DeckColors.AccentSoft else Color.Transparent,
+        focusedScale = 1.02f,
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(4.dp).height(22.dp).clip(RoundedCornerShape(2.dp)).background(if (selected) DeckColors.Accent else Color.Transparent))
+            Spacer(Modifier.width(10.dp))
+            Icon(icon, null, Modifier.size(18.dp), tint = if (selected) DeckColors.Accent else DeckColors.TextDim)
+            Spacer(Modifier.width(8.dp))
+            Text(name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, fontSize = 14.sp)
         }
     }
 }
@@ -361,12 +471,21 @@ private fun SystemRow(name: String, short: String?, count: Int, installed: Int?,
 }
 
 @Composable
-private fun SystemTabs(platforms: List<Platform>, selected: String?, onSelect: (String?) -> Unit) {
+private fun SystemTabs(
+    platforms: List<Platform>,
+    selected: String?,
+    source: LibrarySource,
+    onSelect: (String?) -> Unit,
+    onSource: (LibrarySource) -> Unit,
+    onCollections: () -> Unit,
+) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        item { Chip("All", selected == null) { onSelect(null) } }
+        item { Chip("All", selected == null && source == LibrarySource.All) { onSource(LibrarySource.All); onSelect(null) } }
+        item { Chip("★ Favorites", selected == null && source == LibrarySource.Favorites) { onSource(LibrarySource.Favorites); onSelect(null) } }
+        item { Chip((source as? LibrarySource.Collection)?.name ?: "Collections", selected == null && source is LibrarySource.Collection, onCollections) }
         items(platforms, key = { it.slug }) { p -> Chip(p.shortName.ifBlank { p.name }, selected == p.slug) { onSelect(p.slug) } }
     }
 }
@@ -428,7 +547,7 @@ private fun GameGrid(
     Column(modifier) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (layout.short) 2.dp else 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                state.selectedPlatform?.name ?: "All games",
+                state.title,
                 fontSize = if (layout.compact || layout.short) 16.sp else 20.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
@@ -436,13 +555,26 @@ private fun GameGrid(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(if (state.total > 0) "${state.total} games" else "", color = DeckColors.TextDim, fontSize = 13.sp)
+            if ((state.source != LibrarySource.All || state.selected != null) && state.total > 0) {
+                Spacer(Modifier.width(12.dp))
+                if (state.batchWorking) CircularProgressIndicator(Modifier.size(22.dp), color = DeckColors.Accent, strokeWidth = 2.dp)
+                else DeckButton("Download all", vm::planDownloadAll, icon = Icons.Default.Download)
+            }
         }
         if (state.error != null && state.games.isEmpty()) {
             EmptyState("Couldn't load games", state.error, "Retry", vm::reload)
             return
         }
         if (!state.loading && state.games.isEmpty()) {
-            EmptyState(if (state.query.isBlank()) "No games here" else "No matches", if (state.query.isBlank()) "" else "Nothing matched \"${state.query}\".", null) {}
+            EmptyState(
+                if (state.query.isNotBlank()) "No matches" else if (state.source == LibrarySource.Favorites) "No favorites yet" else "No games here",
+                when {
+                    state.query.isNotBlank() -> "Nothing matched \"${state.query}\"."
+                    state.source == LibrarySource.Favorites -> "Star games on their page (here or in GameHub) to find them here."
+                    else -> ""
+                },
+                null,
+            ) {}
             return
         }
         LazyVerticalGrid(
@@ -479,6 +611,15 @@ private fun GameGrid(
                         focusTarget = rom.id
                         onOpenGame(connId, rom.id)
                     },
+                    onFocused = {
+                        SecondScreen.spotlight.value = SpotlightGame(
+                            title = rom.title,
+                            system = state.platforms.firstOrNull { it.slug == rom.platformSlug }?.name ?: rom.platformSlug.uppercase(),
+                            boxartUrl = vm.mediaUrl(rom.boxartUrl, 600),
+                            heroUrl = null,
+                            details = rom.releaseDate?.take(4),
+                        )
+                    },
                 )
             }
             if (state.loading) {
@@ -509,8 +650,10 @@ private fun GameCard(
     isDownloaded: Boolean,
     task: DownloadTask?,
     onClick: () -> Unit,
+    onFocused: () -> Unit = {},
 ) {
     DeckFocusable(onClick = onClick, modifier = modifier.fillMaxWidth(), focusedScale = 1.06f) { focused ->
+        LaunchedEffect(focused) { if (focused) onFocused() }
         Column {
             Box(Modifier.fillMaxWidth().aspectRatio(0.75f).background(DeckColors.SurfaceHigh)) {
                 if (imageUrl != null) {
@@ -600,3 +743,6 @@ fun deckFieldColors() = OutlinedTextFieldDefaults.colors(
     unfocusedContainerColor = DeckColors.Surface,
     cursorColor = DeckColors.Accent,
 )
+
+@Composable
+private fun Modifier.verticalScrollCompat(): Modifier = this.then(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()))

@@ -11,9 +11,14 @@ import com.gamehub.downloader.data.Connection
 import com.gamehub.downloader.data.FolderEntry
 import com.gamehub.downloader.data.FolderMapping
 import com.gamehub.downloader.data.FolderStorage
+import com.gamehub.downloader.data.Emulators
 import com.gamehub.downloader.data.InstalledIndex
+import com.gamehub.downloader.data.Launcher
+import com.gamehub.downloader.data.PlaySession
 import com.gamehub.downloader.data.LaunchFileWriter
+import com.gamehub.downloader.data.Storage
 import com.gamehub.downloader.data.SystemRules
+import com.gamehub.downloader.download.formatBytes
 import com.gamehub.downloader.download.DownloadMode
 import com.gamehub.downloader.download.DownloadTask
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +59,12 @@ data class GameState(
     val vitaTitleId: String? = null,
     val vita3kInstalled: Boolean = false,
     val message: String? = null,
+    /** Emulators that can play this game here, and the one the Play button uses. */
+    val launchers: List<Launcher> = emptyList(),
+    val launcher: Launcher? = null,
+    val favorite: Boolean = false,
+    /** Asking which emulator to use for this system. */
+    val choosingLauncher: Boolean = false,
 )
 
 class GameViewModel(application: Application) : AndroidViewModel(application) {
@@ -88,8 +99,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             val api = app.api(conn).also { this@GameViewModel.api = it }
             runCatching { api.rom(romId) }
                 .onSuccess { rom ->
-                    _state.update { it.copy(connection = conn, rom = rom, loading = false) }
+                    _state.update { it.copy(connection = conn, rom = rom, loading = false, favorite = rom.favorite == 1) }
                     refreshFolder()
+                    refreshLaunchers()
                     resolveRelated(api, rom)
                     // Re-check Vita3K status whenever its installed list changes.
                     if (SystemRules.supportsVita3k(rom.platformSlug)) {
@@ -205,6 +217,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun checkExistingAndEnqueue(mode: DownloadMode, mapping: FolderMapping) {
+        // Refuse up front when the game can't fit (archives that get extracted need room for both).
+        val rom = _state.value.rom
+        val size = rom?.sizeBytes?.takeIf { mode == DownloadMode.File } ?: 0
+        val need = if (mapping.extract && rom?.isArchive == true) size * 3 else size
+        val free = withContext(Dispatchers.IO) { Storage.freeBytes(mapping.treeUri) }
+        if (free != null && need > 0 && need > free - Storage.RESERVE_BYTES) {
+            _state.update {
+                it.copy(message = "Not enough space on ${Storage.volumeLabel(mapping.treeUri)}: needs ${formatBytes(need)}, ${formatBytes(free)} free")
+            }
+            return
+        }
         val name = fileNameFor(mode)
         val exists = withContext(Dispatchers.IO) {
             runCatching { FolderStorage.resolve(app, mapping)?.findFile(name) != null }.getOrDefault(false)
@@ -392,8 +415,84 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playInVita3k() {
-        val id = _state.value.vitaTitleId ?: return
-        if (!app.vita3k.play(id)) _state.update { it.copy(message = "Couldn't start Vita3K") }
+        val s = _state.value
+        val id = s.vitaTitleId ?: return
+        if (!app.vita3k.play(id)) {
+            _state.update { it.copy(message = "Couldn't start Vita3K") }
+            return
+        }
+        trackSession("org.vita3k.emulator")
+    }
+
+    /** Works out which emulators can start this game here, and which one Play uses. */
+    fun refreshLaunchers() = viewModelScope.launch {
+        val rom = _state.value.rom ?: return@launch
+        val settings = app.settings.current()
+        val catalog = _state.value.connection?.let { app.emulatorCatalogs.get(it) }
+        val all = withContext(Dispatchers.IO) { Emulators.available(app, rom.platformSlug, catalog) }
+        val pick = Emulators.preferred(all, settings.launchers[rom.platformSlug], settings.saveSync.retroarchCoreDirs[rom.platformSlug])
+        _state.update { it.copy(launchers = all, launcher = pick) }
+    }
+
+    fun openLauncherChoice() = _state.update { it.copy(choosingLauncher = true) }
+    fun closeLauncherChoice() = _state.update { it.copy(choosingLauncher = false) }
+
+    /** Remembers [launcher] for every game of this system. */
+    fun chooseLauncher(launcher: Launcher) = viewModelScope.launch {
+        val rom = _state.value.rom ?: return@launch
+        app.settings.setLauncher(rom.platformSlug, launcher.id)
+        _state.update { it.copy(launcher = launcher, choosingLauncher = false, message = "${rom.platformName ?: rom.platformSlug} games now open in ${launcher.label}") }
+    }
+
+    /** Starts the downloaded game in the chosen emulator. */
+    fun play() = viewModelScope.launch {
+        val s = _state.value
+        val rom = s.rom ?: return@launch
+        val folder = s.folder ?: return@launch
+        val launcher = s.launcher ?: run {
+            _state.update { it.copy(message = "No emulator for ${rom.platformName ?: rom.platformSlug} is installed") }
+            return@launch
+        }
+        val files = app.installed.findGameFiles(folder, rom.title, rom.filename)
+        val target = Emulators.pickTarget(files, launcher.accept) ?: run {
+            val ext = files.firstOrNull { !it.isDir }?.name?.substringAfterLast('.', "")?.lowercase()
+            _state.update {
+                it.copy(
+                    message = if (ext.isNullOrEmpty()) "Couldn't find the game's file in ${FolderStorage.describe(folder)}"
+                    else "${launcher.label} can't open .$ext files. Turn on \"Extract after download\" for this system or choose another emulator."
+                )
+            }
+            return@launch
+        }
+        val tags = buildMap { s.vitaTitleId?.let { put("vita_game_id", it) } }
+        val intent = Emulators.intent(app, launcher, target, tags) ?: run {
+            _state.update { it.copy(message = "${launcher.label} needs the game on this device's storage") }
+            return@launch
+        }
+        val started = runCatching { app.startActivity(intent) }
+        if (started.isFailure) {
+            _state.update { it.copy(message = "Couldn't start ${launcher.label}: ${started.exceptionOrNull()?.message ?: "unknown error"}") }
+            return@launch
+        }
+        trackSession(launcher.packageName)
+    }
+
+    private fun trackSession(pkg: String) {
+        val s = _state.value
+        val rom = s.rom ?: return
+        val conn = s.connection ?: return
+        app.appScope.launch { app.playtime.start(PlaySession(conn.id, rom.id, rom.title, pkg, System.currentTimeMillis())) }
+    }
+
+    fun toggleFavorite() = viewModelScope.launch {
+        val s = _state.value
+        val rom = s.rom ?: return@launch
+        val api = api ?: return@launch
+        val want = !s.favorite
+        _state.update { it.copy(favorite = want) }
+        runCatching { api.setFavorite(rom.id, want) }
+            .onSuccess { fav -> _state.update { it.copy(favorite = fav, message = if (fav) "Added to favorites" else "Removed from favorites") } }
+            .onFailure { e -> _state.update { it.copy(favorite = !want, message = e.message ?: "Couldn't update favorites") } }
     }
 
     fun setVita3kFolder(uri: Uri) = viewModelScope.launch {

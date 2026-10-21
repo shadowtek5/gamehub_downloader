@@ -13,8 +13,8 @@ android {
         applicationId = "com.gamehub.downloader"
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.2.1"
+        versionCode = 6
+        versionName = "1.3.0"
     }
 
     // Release signing comes from ~/.gradle/gradle.properties (never committed):
@@ -80,6 +80,7 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")

@@ -2,6 +2,17 @@
 
 A controller-first Android app (styled like the Steam Deck UI) for browsing a [GameHub](../GameHub) server and downloading ROMs to your handheld. It is designed for the **AYN Thor** but adapts to any Android 10+ device in landscape or portrait.
 
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/browse.webp" alt="Browsing a system's games"><br/><sub><b>Browse</b> — systems down the side, box art grid, installed games marked</sub></td>
+    <td width="50%"><img src="docs/screenshots/game.webp" alt="A game's page"><br/><sub><b>Game</b> — details, download, trailer and delete</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/saves.webp" alt="Save sync settings"><br/><sub><b>Save sync</b> — RetroArch saves and states, PPSSPP, Azahar and more</sub></td>
+    <td width="50%" valign="top"><img src="docs/screenshots/notification.webp" alt="Save sync notification"><br/><sub><b>Notifications</b> — what each sync uploaded or downloaded</sub></td>
+  </tr>
+</table>
+
 ## Features
 
 - **GameHub connections.** Add one or more servers. Pair by QR (GameHub's device-pairing flow: scan with a signed-in phone or PC, then tap Approve) or paste an API token from *Account › API tokens*. Switch servers from the top bar or with Select.

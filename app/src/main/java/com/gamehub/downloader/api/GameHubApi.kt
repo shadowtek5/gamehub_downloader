@@ -52,6 +52,9 @@ data class BrowseRom(
     val language: String? = null,
     @SerialName("size_bytes") val sizeBytes: Long? = null,
     @SerialName("release_date") val releaseDate: String? = null,
+    /** DLC and updates linked to the game (GameHub 0.1.16+). */
+    @SerialName("dlc_count") val dlcCount: Int = 0,
+    @SerialName("update_count") val updateCount: Int = 0,
 )
 
 @Serializable
@@ -100,6 +103,10 @@ data class RomDetail(
     val favorite: Int? = null,
     @SerialName("playtime_seconds") val playtimeSeconds: Long? = null,
     @SerialName("last_played_at") val lastPlayedAt: String? = null,
+    /** DLC, updates and licenses linked to this game (GameHub 0.1.16+). */
+    val addons: List<GameAddon> = emptyList(),
+    /** For an add-on: the game it belongs to. */
+    @SerialName("addon_of") val addonOf: AddonParent? = null,
 ) {
     val isArchive: Boolean
         get() = filename?.substringAfterLast('.', "")?.lowercase() in setOf("zip", "7z")
@@ -115,6 +122,39 @@ data class RomDetail(
     val isMultiDisc: Boolean get() = discNumber != null
     val isCueSheet: Boolean get() = filename?.endsWith(".cue", ignoreCase = true) == true
 }
+
+/** A DLC, update or license file that belongs to a game. */
+@Serializable
+data class GameAddon(
+    val id: Long,
+    /** "update", "dlc" or "license" */
+    val kind: String,
+    val title: String,
+    val name: String? = null,
+    val version: String? = null,
+    @SerialName("addon_id") val addonId: String? = null,
+    val filename: String,
+    @SerialName("size_bytes") val sizeBytes: Long = 0,
+    /** A package of several (a PS Vita DLC pack): each DLC's id and name. */
+    val items: List<AddonItem>? = null,
+) {
+    /** Its own name, without the game's: "Mario Kart 8 Deluxe - Booster Course Pass" → "Booster Course Pass". */
+    fun shortName(gameTitle: String): String {
+        val own = (name ?: title).trim()
+        if (own.length > gameTitle.length + 2 && own.startsWith(gameTitle, ignoreCase = true)) {
+            return own.substring(gameTitle.length).trimStart(' ', ':', '-', '–', '—').ifEmpty { own }
+        }
+        return own
+    }
+
+    val kindLabel: String get() = when (kind) { "update" -> "Update"; "dlc" -> "DLC"; else -> "License" }
+}
+
+@Serializable
+data class AddonItem(val id: String, val name: String)
+
+@Serializable
+data class AddonParent(val id: Long, val title: String, val kind: String)
 
 @Serializable
 data class Hltb(val main: Long? = null, val plus: Long? = null, val completionist: Long? = null)

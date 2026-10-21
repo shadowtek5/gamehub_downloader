@@ -258,13 +258,13 @@ class DownloadService : Service() {
             refreshNotification()
             val archive = folder.findFile(finalName)
             note = if (archive == null) "Downloaded file went missing"
-            else app.vita3k.processDownloadedZip(archive, task.folder) { done, total ->
+            else app.vita3k.processDownloadedZip(archive, task.folder, launchFile = !task.isAddon) { done, total ->
                 manager.update(id) { it.copy(downloadedBytes = done, totalBytes = total) }
                 refreshNotification()
             }.summary()
         }
 
-        manager.update(id) { it.copy(state = DownloadState.Completed, bytesPerSecond = 0, error = null, extractedFiles = extracted, note = note) }
+        manager.update(id) { it.copy(state = DownloadState.Completed, bytesPerSecond = 0, error = null, extractedFiles = extracted, note = note ?: it.doneHint) }
         app.installed.refresh(task.connectionId)
         app.history.add(
             DownloadRecord(

@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
@@ -197,6 +198,7 @@ fun GameScreen(
                                     }
                             },
                             onDownload = { mode -> pendingMode = mode; vm.requestDownload(mode) },
+                            onDownloadAddons = vm::downloadAddons,
                             onCancel = { task?.let { vm.cancel(it.id) } },
                             onChangeFolder = { pickChangeFolder(null) },
                             onDelete = vm::requestDelete,
@@ -366,6 +368,7 @@ private fun Details(
     downloadedAt: String?,
     installedFile: String?,
     onDownload: (DownloadMode) -> Unit,
+    onDownloadAddons: (List<com.gamehub.downloader.api.GameAddon>) -> Unit,
     onCancel: () -> Unit,
     onChangeFolder: () -> Unit,
     onDelete: () -> Unit,
@@ -484,6 +487,10 @@ private fun Details(
                 LauncherRow(state.launcher?.label, state.launchers.size, onChooseLauncher)
             }
             state.compat?.let { c -> CompatCard(c, state.launcher?.label, installedFile != null || state.vita3kInstalled, onRate) }
+            rom.addonOf?.let { p ->
+                Notice(Icons.Default.Extension, DeckColors.TextDim, "${if (p.kind == "update") "Update" else if (p.kind == "dlc") "DLC" else "License"} for ${p.title}")
+            }
+            if (rom.addons.isNotEmpty()) AddonsCard(rom, onDownloadAddons)
             when {
                 installedFile != null -> Notice(Icons.Default.CheckCircle, DeckColors.Success, "Installed: $installedFile")
                 downloadedAt != null -> Notice(Icons.Default.Info, DeckColors.TextDim, "Downloaded earlier: $downloadedAt (no longer found in the folder)")
@@ -949,6 +956,39 @@ fun RatingChip(rating: String, text: String = ratingLabel(rating)) {
         Modifier.clip(RoundedCornerShape(50)).background(ratingColor(rating).copy(alpha = 0.18f)).padding(horizontal = 10.dp, vertical = 4.dp),
         color = ratingColor(rating), fontSize = 12.sp, fontWeight = FontWeight.Bold,
     )
+}
+
+/** A game's DLC, updates and licenses: each downloads on its own, or all at once. */
+@Composable
+private fun AddonsCard(rom: RomDetail, onDownload: (List<com.gamehub.downloader.api.GameAddon>) -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("DLC & updates · ${rom.addons.size}", Modifier.weight(1f), color = DeckColors.TextDim, fontSize = 12.sp)
+            if (rom.addons.count { it.sizeBytes > 0 } > 1) {
+                DeckButton("Download all (${formatBytes(rom.addons.sumOf { it.sizeBytes })})", { onDownload(rom.addons) }, icon = Icons.Default.Download)
+            }
+        }
+        rom.addons.forEach { a ->
+            DeckFocusable(onClick = { onDownload(listOf(a)) }, modifier = Modifier.fillMaxWidth(), focusedScale = 1.0f) {
+                Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Tag(a.kindLabel, accent = a.kind == "update")
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        val pack = a.items.orEmpty()
+                        Text(if (pack.isNotEmpty()) "DLC pack · ${pack.size}" else if (a.kind == "update" && a.version != null) a.version else a.shortName(rom.title), fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (pack.isNotEmpty()) Text(pack.joinToString(" · ") { it.name.ifEmpty { it.id } }, color = DeckColors.TextDim, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(listOfNotNull(a.version.takeIf { a.kind != "update" }, formatBytes(a.sizeBytes)).joinToString(" · "), color = DeckColors.TextDim, fontSize = 12.sp)
+                    }
+                    Icon(Icons.Default.Download, contentDescription = "Download", tint = DeckColors.TextDim)
+                }
+            }
+        }
+        addonInstallHint(rom.platformSlug)?.let { Text(it.replace("Install it", "Install them").replace("Install the .pkg", "Install the .pkg files"), color = DeckColors.TextDim, fontSize = 12.sp) }
+            ?: if (rom.platformSlug == "vita") Text("Installed into Vita3K, like the game.", color = DeckColors.TextDim, fontSize = 12.sp) else Unit
+    }
 }
 
 /** How the game runs: official lists, reports from handhelds, and your own rating for the current emulator. */

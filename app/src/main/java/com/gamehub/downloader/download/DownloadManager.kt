@@ -35,6 +35,10 @@ data class DownloadTask(
     val extractedFiles: Int? = null,
     /** Extra result info for a finished download (e.g. launch file created, or why it wasn't). */
     val note: String? = null,
+    /** DLC / updates: how to install it, shown when it finishes (unless the download step says more). */
+    val doneHint: String? = null,
+    /** A DLC / update of [romId]'s game: no launch file of its own. */
+    val isAddon: Boolean = false,
 ) {
     val percent: Int?
         get() = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else null

@@ -280,7 +280,7 @@ class Vita3k(private val context: Context, private val settings: SettingsReposit
      * read its title ID → write the .dpt launch file → install into Vita3K → delete the zip.
      * The zip is kept if installing isn't possible, so nothing is lost.
      */
-    suspend fun processDownloadedZip(zip: DocumentFile, mapping: FolderMapping, onProgress: (Long, Long) -> Unit = { _, _ -> }): Outcome {
+    suspend fun processDownloadedZip(zip: DocumentFile, mapping: FolderMapping, launchFile: Boolean = true, onProgress: (Long, Long) -> Unit = { _, _ -> }): Outcome {
         val problems = mutableListOf<String>()
         val writer = LaunchFileWriter(context)
         val titleId = writer.titleIdFor(zip)
@@ -307,7 +307,8 @@ class Vita3k(private val context: Context, private val settings: SettingsReposit
 
         // The .dpt sits next to the zip in the same folder; Cocoon only looks at the .dpt files.
         // Skipped when the install failed and the game isn't in Vita3K, since it would launch nothing.
-        val wantLaunchFile = installed || isInstalledAndLoadable(titleId) || settings.current().vita3kFolderUri == null
+        // DLC and updates start with their game: no launch file of their own.
+        val wantLaunchFile = launchFile && (installed || isInstalledAndLoadable(titleId) || settings.current().vita3kFolderUri == null)
         val dir = withContext(Dispatchers.IO) { FolderStorage.resolve(context, mapping) }
         val launchFile = if (!wantLaunchFile) null else dir?.let { d ->
             runCatching { writer.write(d, zipName, titleId) }.getOrElse { problems += "launch file failed: ${it.message}"; null }

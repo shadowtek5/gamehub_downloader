@@ -673,6 +673,14 @@ private fun GameCard(
                     )
                 }
                 val active = task?.isActive == true
+                if ((rom.dlcCount > 0 || rom.updateCount > 0) && !active) {
+                    Text(
+                        if (rom.dlcCount > 0) "+${rom.dlcCount} DLC" else "UPDATE",
+                        Modifier.align(Alignment.BottomStart).padding(6.dp).clip(RoundedCornerShape(10.dp))
+                            .background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 7.dp, vertical = 2.dp),
+                        fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFD4B0FF),
+                    )
+                }
                 if (isDownloaded && !active) {
                     Icon(
                         Icons.Default.CheckCircle, "Installed",

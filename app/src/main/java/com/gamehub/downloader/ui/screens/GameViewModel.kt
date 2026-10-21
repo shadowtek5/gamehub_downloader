@@ -241,6 +241,68 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** DLC / updates waiting for the system's folder to be chosen. */
+    private var pendingAddons: List<com.gamehub.downloader.api.GameAddon>? = null
+
+    /** Downloads these DLC / updates into the game's system folder (Vita: installed into Vita3K like the game). */
+    fun downloadAddons(addons: List<com.gamehub.downloader.api.GameAddon>) = viewModelScope.launch {
+        refreshFolder()
+        val s = _state.value
+        val conn = s.connection ?: return@launch
+        val wanted = addons.filter { it.sizeBytes > 0 }
+        if (wanted.isEmpty()) return@launch
+        if (s.folder == null || !s.folderOk) {
+            pendingAddons = wanted
+            val base = conn.baseFolderUri?.takeIf { withContext(Dispatchers.IO) { FolderStorage.hasAccess(app, it) } }
+            val slug = s.rom?.platformSlug ?: return@launch
+            val label = base?.let { FolderStorage.describe(FolderMapping(conn.id, slug, slug, it, subPath = slug)) }
+            _state.update { it.copy(prompt = GamePrompt.ChooseFolder(DownloadMode.File, label, false)) }
+            return@launch
+        }
+        enqueueAddons(wanted, s.folder)
+    }
+
+    private suspend fun enqueueAddons(addons: List<com.gamehub.downloader.api.GameAddon>, mapping: FolderMapping) {
+        pendingAddons = null
+        val s = _state.value
+        val rom = s.rom ?: return
+        val conn = s.connection ?: return
+        val need = addons.sumOf { it.sizeBytes }
+        val free = withContext(Dispatchers.IO) { Storage.freeBytes(mapping.treeUri) }
+        if (free != null && need > free - Storage.RESERVE_BYTES) {
+            _state.update { it.copy(message = "Not enough space on ${Storage.volumeLabel(mapping.treeUri)}: needs ${formatBytes(need)}, ${formatBytes(free)} free") }
+            return
+        }
+        for (a in addons) {
+            app.downloads.enqueue(
+                DownloadTask(
+                    connectionId = conn.id,
+                    romId = a.id,
+                    title = "${rom.title} · " + when {
+                        !a.items.isNullOrEmpty() -> "DLC pack · ${a.items.size}"
+                        a.kind == "update" && a.version != null -> "Update ${a.version}"
+                        else -> "${a.kindLabel}: ${a.shortName(rom.title)}"
+                    },
+                    systemKey = rom.platformSlug,
+                    systemName = rom.platformName ?: rom.platformSlug,
+                    fileName = FolderStorage.sanitize(a.filename),
+                    mode = DownloadMode.File,
+                    folder = mapping,
+                    boxartUrl = rom.boxartUrl,
+                    totalBytes = a.sizeBytes,
+                    doneHint = addonInstallHint(rom.platformSlug),
+                    isAddon = true,
+                )
+            )
+        }
+        _state.update { it.copy(message = if (addons.size == 1) "Added to downloads" else "Added ${addons.size} downloads") }
+    }
+
+    /** After the system's folder was chosen: the DLC / updates waiting for it ([addons], taken before the prompt closed), else the game. */
+    private suspend fun afterFolderChosen(mode: DownloadMode, mapping: FolderMapping, addons: List<com.gamehub.downloader.api.GameAddon>?) {
+        if (addons != null) enqueueAddons(addons, mapping) else checkExistingAndEnqueue(mode, mapping)
+    }
+
     fun confirmReplace(mode: DownloadMode) {
         val mapping = _state.value.folder ?: return
         dismissPrompt()
@@ -249,6 +311,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     /** User picked a dedicated folder for this system. */
     fun onFolderPicked(uri: Uri, mode: DownloadMode) = viewModelScope.launch {
+        val addons = pendingAddons
         val s = _state.value
         val rom = s.rom ?: return@launch
         val conn = s.connection ?: return@launch
@@ -256,11 +319,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         app.settings.setFolder(mapping)
         dismissPrompt()
         refreshFolder()
-        checkExistingAndEnqueue(mode, mapping)
+        afterFolderChosen(mode, mapping, addons)
     }
 
     /** User picked (or already has) a base folder; this system gets a sub-folder named after its slug. */
     fun useBaseFolder(mode: DownloadMode, newBase: Uri? = null) = viewModelScope.launch {
+        val addons = pendingAddons
         val s = _state.value
         val rom = s.rom ?: return@launch
         var conn = s.connection ?: return@launch
@@ -279,7 +343,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         app.settings.setFolder(mapping)
         dismissPrompt()
         refreshFolder()
-        checkExistingAndEnqueue(mode, mapping)
+        afterFolderChosen(mode, mapping, addons)
     }
 
     fun changeFolder(uri: Uri) = viewModelScope.launch {
@@ -537,6 +601,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancel(taskId: String) = app.downloads.cancel(taskId)
-    fun dismissPrompt() = _state.update { it.copy(prompt = null) }
+    fun dismissPrompt() {
+        pendingAddons = null
+        _state.update { it.copy(prompt = null) }
+    }
     fun clearMessage() = _state.update { it.copy(message = null) }
+}
+
+/** How each system's emulators take DLC and updates (Vita: the app installs them into Vita3K). */
+fun addonInstallHint(systemKey: String): String? = when (systemKey) {
+    "switch" -> "Install it in Eden with Install files to NAND."
+    "ps3" -> "Install the .pkg with the emulator's Install packages; DLC that needs a license also needs its .rap."
+    "3ds" -> "Install it in Azahar with Install CIA."
+    "xbox360" -> "Install it from the emulator's content menu."
+    "wiiu" -> "Install it in Cemu with Install game title, update or DLC."
+    else -> null
 }

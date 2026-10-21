@@ -210,6 +210,7 @@ class Bios(private val context: Context) {
             "drastic" to "DraStic/system",
             "vita3k" to "BIOS/VITA",
             "ps3" to "BIOS/PS3_BIOS",
+            "xemu" to "BIOS/XBOX",
         )
 
         /** Used when the GameHub server is older than 0.1.11 (no emulator catalog). Mirrors GameHub's EMULATOR_BIOS. */
@@ -236,6 +237,8 @@ class Bios(private val context: Context) {
                 "Any folder (e.g. BIOS/PS3_BIOS). Then install PS3UPDAT.PUP from the emulator's firmware option."),
             RemoteBiosTarget("cemu", "Cemu", listOf("info.cemu.*"), listOf("wiiu"),
                 "Cemu's user folder (keys.txt goes next to the settings)."),
+            RemoteBiosTarget("xemu", "X1 BOX / hakuX", listOf("com.izzy2lost.x1box*", "com.rfandango.haku_x*"), listOf("xbox"),
+                "Any folder (e.g. BIOS/XBOX). Then in the emulator's setup pick mcpx_1.0.bin, the flash BIOS and the hard disk image from it."),
             RemoteBiosTarget("dolphin", "Dolphin", listOf("org.dolphinemu.*", "org.mm.j*", "org.dolphin.*"), listOf("gamecube"),
                 "Optional. Dolphin's user folder › GC › USA, EUR or JAP as IPL.bin (for the GameCube boot animation)."),
         )

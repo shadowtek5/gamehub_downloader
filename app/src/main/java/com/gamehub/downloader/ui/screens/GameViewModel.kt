@@ -65,6 +65,8 @@ data class GameState(
     val favorite: Boolean = false,
     /** Asking which emulator to use for this system. */
     val choosingLauncher: Boolean = false,
+    /** How the game runs: official lists, reports from handhelds, and your own report for [launcher]. */
+    val compat: com.gamehub.downloader.api.CompatInfo? = null,
 )
 
 class GameViewModel(application: Application) : AndroidViewModel(application) {
@@ -421,7 +423,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "Couldn't start Vita3K") }
             return
         }
-        trackSession("org.vita3k.emulator")
+        trackSession("org.vita3k.emulator", "org.vita3k.emulator", "Vita3K")
     }
 
     /** Works out which emulators can start this game here, and which one Play uses. */
@@ -430,8 +432,36 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val settings = app.settings.current()
         val catalog = _state.value.connection?.let { app.emulatorCatalogs.get(it) }
         val all = withContext(Dispatchers.IO) { Emulators.available(app, rom.platformSlug, catalog) }
-        val pick = Emulators.preferred(all, settings.launchers[rom.platformSlug], settings.saveSync.retroarchCoreDirs[rom.platformSlug])
+        var pick = Emulators.preferred(all, settings.launchers[rom.platformSlug], settings.saveSync.retroarchCoreDirs[rom.platformSlug])
+        // Reports for this game: if the usual emulator is rated Broken and another installed one Playable, use that one.
+        val compat = api?.let { a -> runCatching { a.compat(rom.id) }.getOrNull() }
+        val ratings = compat?.summary?.devices?.associate { it.emulator to it.consensus }.orEmpty()
+        if (pick != null && ratings[com.gamehub.downloader.data.Compat.emulatorKey(pick)] == "broken") {
+            all.firstOrNull { ratings[com.gamehub.downloader.data.Compat.emulatorKey(it)] == "playable" }?.let { pick = it }
+        }
         _state.update { it.copy(launchers = all, launcher = pick) }
+        refreshCompat()
+    }
+
+    /** Loads the game's compatibility, with your report for the current emulator on this device. */
+    fun refreshCompat() = viewModelScope.launch {
+        val rom = _state.value.rom ?: return@launch
+        val api = api ?: return@launch
+        val key = _state.value.launcher?.let { com.gamehub.downloader.data.Compat.emulatorKey(it) } ?: ""
+        runCatching { api.compat(rom.id, key, com.gamehub.downloader.data.Compat.DEVICE) }
+            .onSuccess { info -> _state.update { it.copy(compat = info) } }
+    }
+
+    /** Rates how the game runs in the current emulator on this device (playable | runs | broken). */
+    fun rate(rating: String) = viewModelScope.launch {
+        val s = _state.value
+        val rom = s.rom ?: return@launch
+        val launcher = s.launcher ?: return@launch
+        val api = api ?: return@launch
+        runCatching {
+            api.reportCompat(rom.id, rating, null, com.gamehub.downloader.data.Compat.emulatorKey(launcher), launcher.label, com.gamehub.downloader.data.Compat.DEVICE)
+        }.onSuccess { _state.update { it.copy(message = "Thanks — saved to GameHub") }; refreshCompat() }
+            .onFailure { e -> _state.update { it.copy(message = e.message ?: "Couldn't save the rating") } }
     }
 
     fun openLauncherChoice() = _state.update { it.copy(choosingLauncher = true) }
@@ -442,6 +472,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val rom = _state.value.rom ?: return@launch
         app.settings.setLauncher(rom.platformSlug, launcher.id)
         _state.update { it.copy(launcher = launcher, choosingLauncher = false, message = "${rom.platformName ?: rom.platformSlug} games now open in ${launcher.label}") }
+        refreshCompat()
     }
 
     /** Starts the downloaded game in the chosen emulator. */
@@ -474,14 +505,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "Couldn't start ${launcher.label}: ${started.exceptionOrNull()?.message ?: "unknown error"}") }
             return@launch
         }
-        trackSession(launcher.packageName)
+        trackSession(launcher.packageName, com.gamehub.downloader.data.Compat.emulatorKey(launcher), launcher.label)
     }
 
-    private fun trackSession(pkg: String) {
+    private fun trackSession(pkg: String, emulator: String, emulatorName: String) {
         val s = _state.value
         val rom = s.rom ?: return
         val conn = s.connection ?: return
-        app.appScope.launch { app.playtime.start(PlaySession(conn.id, rom.id, rom.title, pkg, System.currentTimeMillis())) }
+        app.appScope.launch {
+            app.playtime.start(PlaySession(conn.id, rom.id, rom.title, pkg, System.currentTimeMillis(), emulator, emulatorName))
+        }
     }
 
     fun toggleFavorite() = viewModelScope.launch {

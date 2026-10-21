@@ -82,6 +82,9 @@ data class PlaySession(
     /** The emulator's package, for measuring time with usage access. */
     val packageName: String,
     val startedAt: Long,
+    /** The emulator as compatibility reports name it ("retroarch:fceumm", "com.github.stenzek.duckstation"). */
+    val emulator: String = "",
+    val emulatorName: String = "",
 )
 
 @Serializable

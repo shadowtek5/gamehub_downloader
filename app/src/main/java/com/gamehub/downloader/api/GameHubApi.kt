@@ -253,6 +253,56 @@ data class BiosSystem(
 @Serializable
 private data class BiosResponse(val systems: List<BiosSystem> = emptyList())
 
+// ---- Compatibility (how well a game runs, per emulator and device) ----
+
+@Serializable
+data class CompatReport(
+    val id: Long = 0,
+    val rating: String,
+    val note: String? = null,
+    /** "" = GameHub's in-browser player */
+    val emulator: String = "",
+    val emulatorName: String? = null,
+    val device: String = "",
+    val authorName: String = "",
+)
+
+@Serializable
+data class DeviceCompatGroup(
+    val emulator: String,
+    val emulatorName: String,
+    val consensus: String,
+    val reports: List<CompatReport> = emptyList(),
+)
+
+@Serializable
+data class CompatSummary(
+    /** the in-browser player's badge */
+    val consensus: String? = null,
+    val devices: List<DeviceCompatGroup> = emptyList(),
+)
+
+/** What an official list (RPCS3, Vita3K, PCSX2) says about a game. */
+@Serializable
+data class ExternalCompat(
+    val source: String,
+    val emulator: String,
+    val status: String,
+    val rating: String,
+    val serial: String = "",
+    val link: String? = null,
+)
+
+@Serializable
+data class CompatInfo(
+    val summary: CompatSummary = CompatSummary(),
+    val mine: CompatReport? = null,
+    /** null on servers before 0.1.13, which don't keep reports per emulator and device. */
+    val external: List<ExternalCompat>? = null,
+) {
+    val supportsDeviceReports: Boolean get() = external != null
+}
+
 // ---- Android emulators (GameHub 0.1.11+, from Cocoon FE's emulator list) ----
 
 /** One emulator entry ("player") for a system, with its Daijishou-format launch line. */
@@ -368,6 +418,29 @@ class GameHubApi(private val client: OkHttpClient, val connection: Connection) {
     } catch (e: ApiException) {
         if (e.code == 404) null else throw e
     }
+
+    // ---- Compatibility ----
+
+    /** The game's compatibility, with the caller's own report for [emulator] on [device]. */
+    suspend fun compat(romId: Long, emulator: String = "", device: String = ""): CompatInfo =
+        get(url("api/roms/$romId/compat").newBuilder().addQueryParameter("emulator", emulator).addQueryParameter("device", device).build())
+
+    /** Saves the caller's report (rating: playable | runs | broken). */
+    suspend fun reportCompat(romId: Long, rating: String, note: String?, emulator: String, emulatorName: String, device: String) =
+        withContext(Dispatchers.IO) {
+            val body = json.encodeToString(
+                kotlinx.serialization.json.JsonObject.serializer(),
+                kotlinx.serialization.json.buildJsonObject {
+                    put("rating", kotlinx.serialization.json.JsonPrimitive(rating))
+                    note?.let { put("note", kotlinx.serialization.json.JsonPrimitive(it)) }
+                    put("emulator", kotlinx.serialization.json.JsonPrimitive(emulator))
+                    put("emulatorName", kotlinx.serialization.json.JsonPrimitive(emulatorName))
+                    put("device", kotlinx.serialization.json.JsonPrimitive(device))
+                },
+            )
+            fetch(authed(url("api/roms/$romId/compat")).post(body.toRequestBody("application/json".toMediaType())).build())
+            Unit
+        }
 
     // ---- Firmware / BIOS ----
 

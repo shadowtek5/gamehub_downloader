@@ -21,9 +21,10 @@ class Playtime(private val app: GameHubApp) {
         val s = app.settings.current()
         // Close anything left open first (e.g. a game started while the app was in the background).
         finish()
-        if (!s.trackPlaytime) return
+        // The session is kept even with playtime tracking off: it's also when the app asks how the game ran.
         app.settings.setPlaySession(session)
         android.util.Log.i(TAG, "session started: rom ${session.romId} in ${session.packageName}")
+        if (!s.trackPlaytime) return
         val conn = s.connections.firstOrNull { it.id == session.connectionId } ?: return
         runCatching { app.api(conn).startPlaying(session.romId) }
     }
@@ -38,15 +39,21 @@ class Playtime(private val app: GameHubApp) {
         val api = app.api(conn)
         // Back within a few seconds (e.g. the emulator failed to start): not a session.
         if (now - session.startedAt < MIN_SESSION_MS) {
-            runCatching { api.stopPlaying(session.romId) }
+            if (s.trackPlaytime) runCatching { api.stopPlaying(session.romId) }
             return null
         }
         val ms = foregroundMs(session.packageName, session.startedAt, now) ?: (now - session.startedAt).coerceAtMost(MAX_GUESS_MS)
+        if (!s.trackPlaytime) {
+            app.compat.afterSession(session, ms / 1000)
+            return null
+        }
         // startPlaying() already added the first minute.
         val seconds = (ms / 1000 - 60).coerceAtLeast(0)
         runCatching { api.addPlaytime(session.romId, seconds) }
             .onFailure { android.util.Log.w(TAG, "couldn't add playtime for rom ${session.romId}", it) }
         runCatching { api.stopPlaying(session.romId) }
+        // Played for a while: ask how it ran (once per game and emulator).
+        app.compat.afterSession(session, ms / 1000)
         return ms / 1000
     }
 

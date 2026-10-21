@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -197,6 +198,7 @@ fun AppRoot(openDownloads: MutableStateFlow<Boolean>, openSaveSync: MutableState
         }
 
         UpdatePrompt()
+        RatingPrompt()
 
         var toast by remember { mutableStateOf<String?>(null) }
         val context = LocalContext.current
@@ -271,3 +273,36 @@ private fun UpdatePrompt() {
 @Composable
 private fun Modifier.androidx_verticalScroll(): Modifier =
     this.then(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()))
+
+/** "How did it run?" after a game started with Play has run for a few minutes (once per game and emulator). */
+@Composable
+private fun RatingPrompt() {
+    val app = LocalContext.current.applicationContext as com.gamehub.downloader.GameHubApp
+    val req by app.compat.request.collectAsState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val r = req ?: return
+    fun answer(rating: String) = scope.launch {
+        val err = app.compat.answer(r, rating)
+        app.showMessage(err ?: "Thanks — saved to GameHub")
+    }
+    com.gamehub.downloader.ui.components.DeckDialog(
+        onDismissRequest = { app.compat.dismiss() },
+        title = { Text("How did ${r.title} run?") },
+        text = {
+            Text(
+                "With ${r.emulatorName} on this device. Your answer shows on the game's page in GameHub and helps pick the right emulator next time.",
+                color = DeckColors.TextDim,
+            )
+        },
+        confirmButton = {
+            androidx.compose.foundation.layout.Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                val first = remember { androidx.compose.ui.focus.FocusRequester() }
+                com.gamehub.downloader.ui.components.DeckButton("Playable", { answer("playable") }, Modifier.focusRequester(first), primary = true)
+                com.gamehub.downloader.ui.components.DeckButton("Runs with issues", { answer("runs") })
+                com.gamehub.downloader.ui.components.DeckButton("Broken", { answer("broken") })
+                LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+            }
+        },
+        dismissButton = { com.gamehub.downloader.ui.components.DeckButton("Not now", { app.compat.dismiss() }) },
+    )
+}

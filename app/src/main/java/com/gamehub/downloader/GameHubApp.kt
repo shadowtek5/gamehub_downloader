@@ -43,6 +43,7 @@ class GameHubApp : Application(), SingletonImageLoader.Factory {
     lateinit var playtime: Playtime private set
     lateinit var updater: Updater private set
     lateinit var emulatorCatalogs: com.gamehub.downloader.data.EmulatorCatalogs private set
+    lateinit var compat: com.gamehub.downloader.data.Compat private set
 
     /** Short app-wide messages shown as a toast at the top of the screen. */
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
@@ -68,6 +69,7 @@ class GameHubApp : Application(), SingletonImageLoader.Factory {
         playtime = Playtime(this)
         updater = Updater(this)
         emulatorCatalogs = com.gamehub.downloader.data.EmulatorCatalogs(this)
+        compat = com.gamehub.downloader.data.Compat(this)
         // Settings › Save sync › background schedule.
         appScope.launch {
             settings.settings.map { it.saveSync.backgroundHours to it.saveSync.backgroundUnmetered }.distinctUntilChanged().collect {

@@ -211,6 +211,7 @@ fun GameScreen(
                             onPlay = vm::play,
                             onChooseLauncher = vm::openLauncherChoice,
                             onToggleFavorite = vm::toggleFavorite,
+                            onRate = vm::rate,
                             onSetExtract = vm::setExtract,
                             onTrailer = { url ->
                                 runCatching {
@@ -270,6 +271,9 @@ fun GameScreen(
                                 Icon(Icons.Default.SportsEsports, null, tint = if (current) DeckColors.Accent else DeckColors.TextDim)
                                 Spacer(Modifier.width(12.dp))
                                 Text(l.label, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                                state.compat?.summary?.devices
+                                    ?.firstOrNull { it.emulator == com.gamehub.downloader.data.Compat.emulatorKey(l) }
+                                    ?.let { g -> RatingChip(g.consensus); Spacer(Modifier.width(10.dp)) }
                                 if (current) Icon(Icons.Default.CheckCircle, null, tint = DeckColors.Accent)
                             }
                         }
@@ -374,6 +378,7 @@ private fun Details(
     onPlay: () -> Unit,
     onChooseLauncher: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onRate: (String) -> Unit,
     onSetExtract: (Boolean) -> Unit,
     onTrailer: (String) -> Unit,
     relatedIds: Map<String, Long?>,
@@ -478,6 +483,7 @@ private fun Details(
             if (installedFile != null && !SystemRules.supportsVita3k(rom.platformSlug)) {
                 LauncherRow(state.launcher?.label, state.launchers.size, onChooseLauncher)
             }
+            state.compat?.let { c -> CompatCard(c, state.launcher?.label, installedFile != null || state.vita3kInstalled, onRate) }
             when {
                 installedFile != null -> Notice(Icons.Default.CheckCircle, DeckColors.Success, "Installed: $installedFile")
                 downloadedAt != null -> Notice(Icons.Default.Info, DeckColors.TextDim, "Downloaded earlier: $downloadedAt (no longer found in the folder)")
@@ -920,5 +926,70 @@ private fun formatPlaytime(seconds: Long): String {
         h > 0 && m > 0 -> "${h}h ${m}m"
         h > 0 -> "${h}h"
         else -> "$m min"
+    }
+}
+
+private fun ratingLabel(r: String) = when (r) {
+    "playable" -> "Playable"
+    "runs" -> "Runs with issues"
+    "broken" -> "Broken"
+    else -> r
+}
+
+private fun ratingColor(r: String) = when (r) {
+    "playable" -> DeckColors.Success
+    "runs" -> DeckColors.Warning
+    else -> DeckColors.Error
+}
+
+@Composable
+fun RatingChip(rating: String, text: String = ratingLabel(rating)) {
+    Text(
+        text,
+        Modifier.clip(RoundedCornerShape(50)).background(ratingColor(rating).copy(alpha = 0.18f)).padding(horizontal = 10.dp, vertical = 4.dp),
+        color = ratingColor(rating), fontSize = 12.sp, fontWeight = FontWeight.Bold,
+    )
+}
+
+/** How the game runs: official lists, reports from handhelds, and your own rating for the current emulator. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CompatCard(c: com.gamehub.downloader.api.CompatInfo, emulator: String?, canRate: Boolean, onRate: (String) -> Unit) {
+    val rateHere = canRate && emulator != null && c.supportsDeviceReports
+    if (c.external.isNullOrEmpty() && c.summary.devices.isEmpty() && !rateHere) return
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(DeckColors.Surface).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("Compatibility", color = DeckColors.TextDim, fontSize = 12.sp)
+        c.external.orEmpty().forEach { e ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(e.emulator, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                RatingChip(e.rating, e.status)
+            }
+        }
+        c.summary.devices.take(4).forEach { g ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(g.emulatorName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text(
+                        g.reports.take(2).joinToString(" · ") { r -> if (r.device.isNotEmpty()) "${r.authorName} on ${r.device}" else r.authorName },
+                        color = DeckColors.TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                RatingChip(g.consensus)
+            }
+        }
+        if (rateHere) {
+            Text(
+                if (c.mine != null) "Your rating with $emulator on this device" else "How does it run with $emulator on this device?",
+                color = DeckColors.TextDim, fontSize = 12.sp,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("playable", "runs", "broken").forEach { r ->
+                    DeckButton(ratingLabel(r), { onRate(r) }, primary = c.mine?.rating == r)
+                }
+            }
+        }
     }
 }

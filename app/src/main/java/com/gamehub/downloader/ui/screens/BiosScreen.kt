@@ -114,8 +114,12 @@ fun BiosScreen(onBack: () -> Unit) {
         busy = if (work.size == 1) work.first().id else "all"
         scope.launch {
             val notes = work.map { d ->
-                val n = runCatching { bios.install(app.api(c), d.folderUri!!, d.toInstall) }.getOrElse { 0 }
-                "${d.name}: $n of ${d.toInstall.size}"
+                runCatching {
+                    val n = bios.install(app.api(c), d.folderUri!!, d.toInstall) { i, item ->
+                        message = "${d.name}: copying ${item.path} (${i + 1} of ${d.toInstall.size})…"
+                    }
+                    "${d.name}: $n of ${d.toInstall.size}"
+                }.getOrElse { "${d.name}: ${it.message ?: "failed"}" }
             }
             busy = null
             message = "Installed " + notes.joinToString(" · ")

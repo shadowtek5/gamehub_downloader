@@ -79,7 +79,9 @@ class Bios(private val context: Context) {
             if (target.packages.none { pattern -> installed.any { matches(pattern, it) } }) continue
             val folder = settings.biosFolders[target.id]?.takeIf { FolderStorage.hasAccess(context, it) }
             val present = withContext(Dispatchers.IO) { folder?.let { listAll(it) } ?: emptyMap() }
-            val items = target.platforms.mapNotNull { bySlug[it] }.flatMap { itemsFor(it, flatten = true, present) }.distinctBy { it.path.lowercase() }
+            val items = target.platforms.mapNotNull { bySlug[it] }
+                .flatMap { itemsFor(it, flatten = true, present) + packageItems(it, present) }
+                .distinctBy { it.path.lowercase() }
             if (items.isEmpty()) continue
             out += BiosDestination(
                 target.id, target.name, target.where, settings.biosFolders[target.id],
@@ -88,6 +90,14 @@ class Bios(private val context: Context) {
         }
         return out
     }
+
+    /** System firmware / keys files (PUPs, prod.keys, Switch firmware) — kept with their folder ("Firmware/…nca"). */
+    private fun packageItems(sys: BiosSystem, present: Map<String, Long>): List<BiosItem> =
+        sys.packages.flatMap { pkg ->
+            pkg.files.map { f ->
+                BiosItem(f.filename, f.id, f.size, sys.name, pkg.label, present[f.filename.lowercase()] == f.size)
+            }
+        }
 
     private fun itemsFor(sys: BiosSystem, flatten: Boolean, present: Map<String, Long>): List<BiosItem> {
         fun path(file: String) = if (flatten) file.replace('\\', '/').substringAfterLast('/') else file
@@ -103,10 +113,22 @@ class Bios(private val context: Context) {
     }
 
     /** Downloads [items] into [folderUri] (creating sub-folders). Returns how many were written. */
-    suspend fun install(api: GameHubApi, folderUri: String, items: List<BiosItem>): Int = withContext(Dispatchers.IO) {
+    suspend fun install(
+        api: GameHubApi,
+        folderUri: String,
+        items: List<BiosItem>,
+        onFile: (index: Int, item: BiosItem) -> Unit = { _, _ -> },
+    ): Int = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, Uri.parse(folderUri)) ?: throw ApiException(0, "Can't open the folder")
+        // Firmware packages can be hundreds of MB: refuse up front when they won't fit.
+        val need = items.sumOf { it.size }
+        val free = Storage.freeBytes(folderUri)
+        if (free != null && need > free - Storage.RESERVE_BYTES) {
+            throw ApiException(0, "Not enough space on ${Storage.volumeLabel(folderUri)}: needs ${com.gamehub.downloader.download.formatBytes(need)}, ${com.gamehub.downloader.download.formatBytes(free)} free")
+        }
         var done = 0
-        for (item in items) {
+        for ((index, item) in items.withIndex()) {
+            onFile(index, item)
             val parts = item.path.replace('\\', '/').split('/').filter { it.isNotBlank() && it != ".." && it != "." }
             if (parts.isEmpty()) continue
             var dir: DocumentFile? = root
@@ -186,6 +208,8 @@ class Bios(private val context: Context) {
             "flycast" to "Flycast/data",
             "saturn" to "yabause/bios",
             "drastic" to "DraStic/system",
+            "vita3k" to "BIOS/VITA",
+            "ps3" to "BIOS/PS3_BIOS",
         )
 
         /** Used when the GameHub server is older than 0.1.11 (no emulator catalog). Mirrors GameHub's EMULATOR_BIOS. */
@@ -205,7 +229,13 @@ class Bios(private val context: Context) {
             RemoteBiosTarget("saturn", "Yaba Sanshiro", listOf("org.devmiyax.yabasanshioro2*", "org.uoyabause.*"), listOf("saturn"),
                 "The BIOS folder set in Yaba Sanshiro's settings (yabause/bios)."),
             RemoteBiosTarget("switch", "Eden / Citron / Sudachi / yuzu", listOf("dev.eden.*", "org.citron.*", "org.sudachi.*", "org.yuzu.*", "dev.suyu.*"), listOf("switch"),
-                "A folder you then install keys and firmware from in the emulator (Settings › Install keys / Install firmware)."),
+                "Eden's folder (or any folder): prod.keys and title.keys, and the firmware .zip or Firmware folder. Then in the emulator choose Install keys and Install firmware."),
+            RemoteBiosTarget("vita3k", "Vita3K", listOf("org.vita3k.*", "org.vita3kplus.*"), listOf("vita"),
+                "Any folder (e.g. BIOS/VITA). Then in Vita3K choose Install firmware and pick PSVUPDAT.PUP, then PSP2UPDAT.PUP."),
+            RemoteBiosTarget("ps3", "aPS3e / RPCS3", listOf("aenu.aps3e*", "net.rpcs3*"), listOf("ps3"),
+                "Any folder (e.g. BIOS/PS3_BIOS). Then install PS3UPDAT.PUP from the emulator's firmware option."),
+            RemoteBiosTarget("cemu", "Cemu", listOf("info.cemu.*"), listOf("wiiu"),
+                "Cemu's user folder (keys.txt goes next to the settings)."),
             RemoteBiosTarget("dolphin", "Dolphin", listOf("org.dolphinemu.*", "org.mm.j*", "org.dolphin.*"), listOf("gamecube"),
                 "Optional. Dolphin's user folder › GC › USA, EUR or JAP as IPL.bin (for the GameCube boot animation)."),
         )

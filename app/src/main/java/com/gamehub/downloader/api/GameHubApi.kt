@@ -229,6 +229,17 @@ data class FirmwareExtra(
     @SerialName("size_bytes") val size: Long = 0,
 )
 
+/** System firmware / keys for consoles like PS Vita, PS3 and Switch (GameHub 0.1.12+), kept as uploaded. */
+@Serializable
+data class FirmwarePackage(
+    val id: String,
+    val label: String,
+    val required: Boolean = false,
+    /** Set when the package is a folder of files (Switch firmware .nca files under "Firmware/"). */
+    val folder: String? = null,
+    val files: List<FirmwareExtra> = emptyList(),
+)
+
 @Serializable
 data class BiosSystem(
     val slug: String,
@@ -236,6 +247,7 @@ data class BiosSystem(
     val required: Boolean = false,
     val files: List<BiosFile> = emptyList(),
     val extras: List<FirmwareExtra> = emptyList(),
+    val packages: List<FirmwarePackage> = emptyList(),
 )
 
 @Serializable
